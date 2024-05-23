@@ -1,0 +1,9 @@
+Training ending date: 2024-05-23 00:28:34.771510
+Train samples: 600000
+Validation samples: 100000
+Batch size: 64
+Epochs: 50
+Training Loss: 0.1427059918642044
+Validation Loss: 0.13969826698303223
+Training Accuracy: 0.948239266872406
+Validation Accuracy: 0.9494459629058838

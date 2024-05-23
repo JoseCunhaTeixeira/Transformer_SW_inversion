@@ -1,0 +1,8 @@
+Encoder Embedding Dimension: 64
+Decoder Embedding Dimension: 64
+Intermediate Dimension: 128
+Number of Heads: 8
+Encoder Number of Layers: 1
+Decoder Number of Layers: 1
+Input Sequence Length: 31
+Output Sequence Length: 20
