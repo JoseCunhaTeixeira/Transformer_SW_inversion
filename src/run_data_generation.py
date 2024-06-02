@@ -157,7 +157,9 @@ possible_WTs = np.arange(d_WT, 10, d_WT)
 
 max_depth = 20
 
-N_models = 400000
+possible_Ns = np.array([6, 7, 8, 9, 10])
+
+N_models = None
 print(f'\nGeneating {N_models} models')
 ### -----------------------------------------------------------------------------------------------
 
@@ -169,6 +171,7 @@ DCs = []
 GMs = []
 THKS = []
 WTs = []
+COORDs = []
 
 for i in tqdm(range(N_models)):
 
@@ -181,8 +184,11 @@ for i in tqdm(range(N_models)):
         raise ValueError('Sum of thicknesses is not equal to max_depth')
 
     soil_types = []
+    Ns = []
     tmp = list(possible_soils)
     for j in range(N_layers):
+        N = random.choice(possible_Ns)
+        Ns.append(N)
         if j > 0:
             tmp.remove(previous_soil_type)
             soil_type = random.choice(tmp)
@@ -197,13 +203,13 @@ for i in tqdm(range(N_models)):
     if N_layers < 4:
         soil_types_to_save = soil_types + [None] * (max_layers - N_layers)
         GM_thicknesses_to_save = GM_thicknesses + [None] * (max_layers - N_layers)
+        Ns_to_save = Ns + [None] * (max_layers - N_layers)
     else : 
         soil_types_to_save = soil_types
         GM_thicknesses_to_save = GM_thicknesses
+        Ns_to_save = Ns
 
     WT = random.choice(possible_WTs)
-
-    Ns = [8] * N_layers
 
     fracs = [0.3] * N_layers
     ### -------------------------------------------------------------------------------------------
@@ -277,6 +283,7 @@ for i in tqdm(range(N_models)):
     GMs.append(soil_types_to_save)
     THKS.append(GM_thicknesses_to_save)
     WTs.append(WT)
+    COORDs.append(Ns_to_save)
     ### -------------------------------------------------------------------------------------------
 
 
@@ -312,8 +319,9 @@ for i in tqdm(range(N_models)):
 
 
 ### SAVE DATA -------------------------------------------------------------------------------------
-np.savetxt(f'{PATH_INPUT}training_data6/DCs_part2.txt', np.array(DCs), fmt='%.3f')
-np.savetxt(f'{PATH_INPUT}training_data6/GMs_part2.txt', np.array(GMs), fmt='%s')
-np.savetxt(f'{PATH_INPUT}training_data6/THKs_part2.txt', np.array(THKS), fmt='%s')
-np.savetxt(f'{PATH_INPUT}training_data6/WTs_part2.txt', np.array(WTs), fmt='%s')
+np.savetxt(f'{PATH_INPUT}training_data7/DCs.txt', np.array(DCs), fmt='%.3f')
+np.savetxt(f'{PATH_INPUT}training_data7/GMs.txt', np.array(GMs), fmt='%s')
+np.savetxt(f'{PATH_INPUT}training_data7/THKs.txt', np.array(THKS), fmt='%s')
+np.savetxt(f'{PATH_INPUT}training_data7/WTs.txt', np.array(WTs), fmt='%s')
+np.savetxt(f'{PATH_INPUT}training_data7/Ns.txt', np.array(COORDs), fmt='%s')
 ### -----------------------------------------------------------------------------------------------

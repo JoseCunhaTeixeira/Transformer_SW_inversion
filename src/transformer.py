@@ -11,13 +11,16 @@ Date : April 30, 2024
 from keras import Model
 from keras import ops
 from keras.layers import Input, Conv1D, MaxPooling1D, Dense
-from keras.optimizers import RMSprop, Adam
+from keras.optimizers import RMSprop
 from keras.callbacks import EarlyStopping
+from keras.metrics import Accuracy
 from keras_nlp.layers import SinePositionEncoding, TokenAndPositionEmbedding, TransformerEncoder, TransformerDecoder
 from keras_nlp.samplers import GreedySampler, Sampler
 
 import os
 import numpy as np
+from tqdm import tqdm
+from seaborn import heatmap
 from pickle import dump
 from datetime import datetime
 import matplotlib.pyplot as plt
@@ -55,11 +58,13 @@ class Transformer:
         self.encoder_emb_dim = 64
         self.decoder_emb_dim = 64
         
-        self.intermediate_dim = 128
+
+        self.intermediate_dim = 256
         self.num_heads = 8
         
         self.encoder_N_layers = 4
         self.decoder_N_layers = 4
+    
 
         self.model = self.build_model()
 
@@ -105,6 +110,7 @@ class Transformer:
             vocabulary_size=self.output_sequence_format.vocab.size,
             sequence_length=self.output_sequence_format.length,
             embedding_dim=self.decoder_emb_dim,
+            # mask_zero=True,
         )(decoder_inputs)
 
         for _ in range(self.decoder_N_layers):
@@ -144,7 +150,12 @@ class Transformer:
     
 
     def save_specs(self):
+        folder_path = f'{PATH_MODELS}/{self.id}/'
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
+
         with open(f'{PATH_MODELS}/{self.id}/{self.id}_model_specs.txt', 'w') as f:
+            f.write(f'Model ID: {self.id}\n\n')
             f.write(f'Encoder Embedding Dimension: {self.encoder_emb_dim}\n')
             f.write(f'Decoder Embedding Dimension: {self.decoder_emb_dim}\n')
             f.write(f'Intermediate Dimension: {self.intermediate_dim}\n')
@@ -157,6 +168,8 @@ class Transformer:
 
 
     def train(self, X_train, y_train, X_val, y_val, epochs=50, batch_size=64):
+        starting_date = datetime.now()
+
         history = self.model.fit(
             [X_train, y_train[:, :-1]], y_train[:, 1:],
             epochs=epochs,
@@ -167,8 +180,21 @@ class Transformer:
             verbose=1
         )
 
+        ending_date = datetime.now()
+        training_time = ending_date - starting_date
+        hours, remainder = divmod(training_time.seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+
+
+        folder_path = f'{PATH_MODELS}/{self.id}/'
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
+
         with open(f'{PATH_MODELS}/{self.id}/{self.id}_training_info.txt', 'w') as f:
-            f.write(f'Training ending date: {datetime.now()}\n')
+            f.write(f'Model ID: {self.id}\n\n')
+            f.write(f'Training starting date: {starting_date}\n')
+            f.write(f'Training ending date: {ending_date}\n')
+            f.write(f'Training Time: {hours} hours {minutes} minutes {seconds} seconds\n')
             f.write(f'Train samples: {X_train.shape[0]}\n')
             f.write(f'Validation samples: {X_val.shape[0]}\n')
             f.write(f'Batch size: {batch_size}\n')
@@ -198,7 +224,6 @@ class Transformer:
         ax_twin.plot(history.history['val_accuracy'], linestyle='--')
         ax_twin.set_xlabel('Epochs')
         ax_twin.set_ylabel('Accuracy')
-        ax_twin.legend(['Training dataset', 'Validation dataset'])
 
         fig.savefig(f'{PATH_MODELS}/{self.id}/{self.id}_training_history.png', format='png', dpi='figure', bbox_inches='tight')
 
@@ -257,3 +282,99 @@ class Transformer:
             )
 
         return ops.convert_to_numpy(decoded_seq)[0][1:]
+    
+
+
+    def evaluate(self, X_test, y_test):
+        words = self.output_sequence_format.vocab.words.copy()
+        conf_matrix = np.zeros((len(words), len(words)))
+
+        accuracies = []
+
+        for i_sample in tqdm(range(X_test.shape[0])):
+            input_seq = X_test[i_sample, ...].reshape(1, X_test.shape[1], 1)
+            target_seq = y_test[i_sample, 1:-1]
+
+            # decoded_seq = self.decode_seq(input_seq)
+            decoded_seq = self.decode_seq_restrictive(input_seq)
+
+            m = Accuracy()
+            accuracy = m(target_seq, decoded_seq).numpy()
+            accuracies.append(accuracy)
+
+            for decoded_word_idx, target_word_idx in zip(decoded_seq, target_seq):
+                conf_matrix[target_word_idx, decoded_word_idx] += 1
+
+
+        accuracies = np.array(accuracies)
+        accuracy = np.nanmean(accuracies)
+
+
+        precisions = []
+        recalls = []
+        F1s = []
+        for i in range(len(words)):
+            true_positives = conf_matrix[i, i]
+            false_positives = np.sum(conf_matrix[:, i]) - true_positives
+            false_negatives = np.sum(conf_matrix[i, :]) - true_positives
+
+            if true_positives == 0 and false_positives == 0:
+                precisions.append(np.nan)
+            else:
+                precisions.append(true_positives / (true_positives + false_positives))
+            
+            if true_positives == 0 and false_negatives == 0:
+                recalls.append(np.nan)
+            else:
+                recalls.append(true_positives / (true_positives + false_negatives))
+            
+            if true_positives == 0 and false_positives == 0 and false_negatives == 0:
+                F1s.append(np.nan)
+            else:
+                F1s.append(2 * (precisions[-1] * recalls[-1]) / (precisions[-1] + recalls[-1]))
+
+        precision = np.nanmean(precisions)
+        recall = np.nanmean(recalls)
+        F1 = np.nanmean(F1s)
+
+        
+        print(f'\nAccuracy: {int(accuracy*100)} %')
+        print(f'Precision: {int(precision*100)} %')
+        print(f'Recall: {int(recall*100)} %')
+        print(f'F1: {int(F1*100)} %')
+
+
+        folder_path = f'{PATH_MODELS}/{self.id}/'
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
+
+        with open(f'{PATH_MODELS}/{self.id}/{self.id}_test_info.txt', 'w') as f:
+            f.write(f'Model ID: {self.id}\n\n')
+            f.write(f'Test ending date: {datetime.now()}\n')
+            f.write(f'Test samples: {X_test.shape[0]}\n')
+            f.write(f'Accuracy: {accuracy:.2f}\n')
+            f.write(f'Precision: {precision:.2f}\n')
+            f.write(f'Recall: {recall:.2f}\n')
+            f.write(f'F1: {F1:.2f}\n\n')
+
+            for i, word in enumerate(words):
+                f.write(f'\n{word}:\n')
+                f.write(f'Precision: {precisions[i]:.2f}\n')
+                f.write(f'Recall: {recalls[i]:.2f}\n')
+                f.write(f'F1: {F1s[i]:.2f}\n')
+
+
+        fig, ax = plt.subplots(dpi=300, figsize=(16, 9))
+        ax.scatter(range(len(accuracies)), accuracies)
+        ax.set_xlabel('Sample (#)')
+        ax.set_ylabel('Accuracy (%)')
+        ax.set_ylim([0,1])
+        fig.savefig(f'{PATH_MODELS}/{self.id}/{self.id}_test_accuracies.png', format='png', dpi='figure', bbox_inches='tight')
+
+        fig, ax = plt.subplots(dpi=300, figsize=(16, 9))
+        heatmap(conf_matrix, annot=True, cmap='Reds', ax=ax, xticklabels=words, yticklabels=words)
+        ax.set_xlabel('Decoded Words')
+        ax.set_ylabel('Expected Words')
+        ax.set_title('Confusion Matrix')
+        fig.savefig(f'{PATH_MODELS}/{self.id}/{self.id}_test_confusion_matrix.png', format='png', dpi='figure', bbox_inches='tight')
+        ### -----------------------------------------------------------------------------------------------

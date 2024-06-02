@@ -29,18 +29,21 @@ from lib.VGfunctions import vanGen
 from lib.RPfunctions import hillsAverage, effFluid, hertzMindlin, biotGassmann
 from lib.TTDSPfunctions import writeVelocityModel, readDispersion
 
+plt.rcParams.update({'font.size': 12})
+cm = 1/2.54
+
 
 
 
 
 ### UNCOMMENT TO RUN ON CPUs ----------------------------------------------------------------------
-# from tensorflow.config import set_visible_devices
-# from tensorflow.config.threading import set_intra_op_parallelism_threads, set_inter_op_parallelism_threads
+from tensorflow.config import set_visible_devices
+from tensorflow.config.threading import set_intra_op_parallelism_threads, set_inter_op_parallelism_threads
 
-# set_visible_devices([], 'GPU')
-# N_jobs = 16
-# set_intra_op_parallelism_threads(N_jobs)
-# set_inter_op_parallelism_threads(N_jobs)
+set_visible_devices([], 'GPU')
+N_jobs = 16
+set_intra_op_parallelism_threads(N_jobs)
+set_inter_op_parallelism_threads(N_jobs)
 ### -----------------------------------------------------------------------------------------------
 
 
@@ -48,7 +51,8 @@ from lib.TTDSPfunctions import writeVelocityModel, readDispersion
 
 
 ### LOAD MODEL ------------------------------------------------------------------------------------
-MODEL_NAME = '[]'
+# MODEL_NAME = '[]'
+MODEL_NAME = sys.argv[1]
 
 path_model = f'{PATH_MODELS}/{MODEL_NAME}/{MODEL_NAME}_model'
 print(f'\nLoading model : {path_model}')
@@ -77,55 +81,21 @@ len_output_seq = output_sequence_format.length
 
 
 ### FIELD DISPERSION DATA FILES -------------------------------------------------------------------
-PROFILE = 'P1-MEAN'
+# PROFILE = 'PJ'
+# dx = 1.5
+PROFILE = sys.argv[2]
+dx = float(sys.argv[3])
+
+
+files = os.listdir(f'{PATH_INPUT}/real_data/{PROFILE}/')
+files = sorted(files, key=lambda x: int(x.split('.')[0]))
+
+xmid_min = 0
+xmid_max = xmid_min + dx*(len(files)-1)
+xmids = np.arange(xmid_min, xmid_max+dx, dx)
+
 if not os.path.exists(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/'):
   os.makedirs(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/')
-
-files = [
-        "0.7500.M0.pvc",
-        "3.7500.M0.pvc",
-        "6.7500.M0.pvc",
-        "9.7500.M0.pvc",
-        "12.7500.M0.pvc",
-        "15.7500.M0.pvc",
-        "18.7500.M0.pvc",
-        "21.7500.M0.pvc",
-        "24.7500.M0.pvc",
-        "27.7500.M0.pvc",
-        "30.7500.M0.pvc",
-        "33.7500.M0.pvc",
-        "36.7500.M0.pvc",
-        "39.7500.M0.pvc",
-        "42.7500.M0.pvc",
-        "45.7500.M0.pvc",
-        "48.7500.M0.pvc",
-        "51.7500.M0.pvc",
-        "54.7500.M0.pvc",
-        "57.7500.M0.pvc",
-        "60.7500.M0.pvc",
-        "63.7500.M0.pvc",
-        "66.7500.M0.pvc",
-        "69.7500.M0.pvc",
-        "72.7500.M0.pvc",
-        "75.7500.M0.pvc",
-        "78.7500.M0.pvc",
-        "81.7500.M0.pvc",
-        "84.7500.M0.pvc",
-        "87.7500.M0.pvc",
-        "90.7500.M0.pvc",
-        "93.7500.M0.pvc",
-        "96.7500.M0.pvc",
-        "99.7500.M0.pvc",
-        "102.7500.M0.pvc",
-        "105.7500.M0.pvc",
-        "108.7500.M0.pvc",
-        "111.7500.M0.pvc",
-        "114.7500.M0.pvc",
-        "117.7500.M0.pvc",
-        "120.7500.M0.pvc",
-        "123.7500.M0.pvc",
-        "126.7500.M0.pvc",
-        ]
 ### -----------------------------------------------------------------------------------------------
 
 
@@ -142,8 +112,14 @@ Sw_db = []
 disp_db = []
 WT_db = []
 depth_db = []
+rms_db = []
+Ns_db = []
 
-fig, ax = plt.subplots(7, 7, figsize=(16,16), dpi=300)
+num_plots = len(xmids)
+subplot_width = int(np.ceil(np.sqrt(num_plots)))
+subplot_height = int(np.ceil(num_plots / subplot_width))
+
+fig, ax = plt.subplots(subplot_height, subplot_width, figsize=(16, 16), dpi=300)
 plt_line = 0
 plt_col = 0
 
@@ -151,7 +127,7 @@ for file in files:
     print('\n\n----------------------------------------------\n\n')
     print('\033[1;32mXmid: ' + file + '\033[0m')
 
-    db = np.loadtxt(f'{PATH_INPUT}/real_data/{file}')
+    db = np.loadtxt(f'{PATH_INPUT}/real_data/{PROFILE}/{file}')
     fs_obs_raw, vs_obs_raw = db[:,0], db[:,1]
 
 
@@ -165,6 +141,7 @@ for file in files:
     axis_resamp = np.arange(min_freq, max_freq+1, 1)
     fs_obs, vs_obs = resamp(fs_obs_raw, vs_obs_raw, axis_resamp=axis_resamp, type='frequency')
 
+    vs_obs_comp = np.copy(vs_obs)
 
     vs_obs = (vs_obs-150) / (400-150)
     vs_obs = vs_obs.reshape(1, vs_obs.shape[0], 1)
@@ -186,15 +163,17 @@ for file in files:
         decoded_GM.append(index_to_word[decoded_seq[i]])
         print(f'{i+1} : {index_to_word[decoded_seq[i]]}')
 
-    soil_types = decoded_GM[3::4]
+    soil_types = decoded_GM[3::6]
     soil_types = [soil for soil in soil_types if soil not in ['[PAD]', '[END]']]
 
-    GM_thicknesses = decoded_GM[5::4]
+    GM_thicknesses = decoded_GM[5::6]
     GM_thicknesses = [float(thickness) for thickness in GM_thicknesses if thickness not in ['[PAD]', '[END]']]
 
+    Ns = decoded_GM[7::6]
+    Ns = [float(N) for N in Ns if N not in ['[PAD]', '[END]']]
+    
     WT = float(decoded_GM[1])
 
-    Ns = [8] * len(soil_types)
     fracs = [0.3] * len(soil_types)
 
     depth = np.sum(GM_thicknesses)
@@ -218,6 +197,7 @@ for file in files:
     GM_db.append(soil_types)
     WT_db.append(WT)
     depth_db.append(depth)
+    Ns_db.append(Ns)
     ### ------------------------------------------------------------------------------------------------
 
 
@@ -332,12 +312,43 @@ for file in files:
 
     dispersion_data, n_modes = readDispersion(gpdc_output_string) # Reads GPDC output and converts dispersion data to a list of numpy arrays for each mode
                                                                 # Updates number of computed modes (can be lower than what was defined if frequency range too small)
+    
+
     disp_db.append(dispersion_data)
+
+
+    rms = np.sqrt(np.mean((vs_obs_comp - dispersion_data[0][:,1])**2))
+    rms_db.append(rms)
+
+    
     ax[plt_line, plt_col].plot(fs_obs_raw, vs_obs_raw, color='black')
     ax[plt_line, plt_col].plot(dispersion_data[0][:,0], dispersion_data[0][:,1], color='red', linestyle='--')
     ax[plt_line, plt_col].set_ylim([100, 500])
     ax[plt_line, plt_col].set_xlim([min_freq, max_freq])
-    if plt_col == 6:
+    ax[plt_line, plt_col].set_title(f'{file} | RMS : {rms:.2f}', fontsize=6)
+
+
+    if plt_line == subplot_height - 1:
+        if plt_col == 0:
+            ax[plt_line, plt_col].tick_params(top=False, labeltop=False, bottom=True, labelbottom=True, left=True, labelleft=True, right=False, labelright=False)
+            ax[plt_line, plt_col].set_xlabel('Frequency\n[Hz]')
+            ax[plt_line, plt_col].set_ylabel("${V_R}$ [m/s]")
+        else :
+            ax[plt_line, plt_col].tick_params(top=False, labeltop=False, bottom=True, labelbottom=True, left=False, labelleft=False, right=False, labelright=False)
+            ax[plt_line, plt_col].set_xlabel('Frequency\n[Hz]')
+            ax[plt_line, plt_col].set_ylabel('')
+    else:
+        if plt_col == 0:
+            ax[plt_line, plt_col].tick_params(top=False, labeltop=False, bottom=False, labelbottom=False, left=True, labelleft=True, right=False, labelright=False)
+            ax[plt_line, plt_col].set_xlabel('')
+            ax[plt_line, plt_col].set_ylabel("${V_R}$ [m/s]")
+        else :
+            ax[plt_line, plt_col].tick_params(top=False, labeltop=False, bottom=False, labelbottom=False, left=False, labelleft=False, right=False, labelright=False)
+            ax[plt_line, plt_col].set_xlabel('')
+            ax[plt_line, plt_col].set_ylabel('')
+
+
+    if plt_col == subplot_width - 1:
         plt_line += 1
         plt_col = 0
     else :
@@ -347,126 +358,261 @@ for file in files:
 
 
 
-# Real and ivereted dispersion comparison along the profile
-fig.savefig(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_disp-comp.png')
+
+### -----------------------------------------------------------------------------------------------
+while plt_col < subplot_width:
+    ax[plt_line, plt_col].axis('off')
+    plt_col += 1
+fig.savefig(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_disp-comp.png', bbox_inches='tight')
+### -----------------------------------------------------------------------------------------------
 
 
 
 
+
+### -----------------------------------------------------------------------------------------------
+np.savetxt(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_zs.txt', zs, fmt='%.2f')
+np.savetxt(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_xs.txt', xmids.reshape(1, len(xmids)), fmt='%.2f')
+### -----------------------------------------------------------------------------------------------
+
+
+
+
+
+### -----------------------------------------------------------------------------------------------
 # Smooth water table profile
 WT_db = np.array(WT_db)
 if (len(WT_db)/2) % 2 == 0:
     wl = len(WT_db)/2 + 1
 else:
     wl = len(WT_db)/2
-WT_db = savgol_filter(WT_db, window_length=wl, polyorder=3, mode="nearest")
+WT_db_smooth = savgol_filter(WT_db, window_length=wl, polyorder=3, mode="nearest")
+np.savetxt(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_WT.txt', WT_db.reshape(1,len(WT_db)) , fmt='%.2f')
+### -----------------------------------------------------------------------------------------------
 
 
 
 
-# Vs profile
+
+### Vs --------------------------------------------------------------------------------------------
 Vs_db = pd.DataFrame(Vs_db).to_numpy().T
-fig, ax = plt.subplots(figsize=(16,9), dpi=300)
-extent = [0, 126, -max(depth_db), -0.1]
+fig, ax = plt.subplots(figsize=(19*cm, 6*cm), dpi=300)
+extent = [xmid_min, xmid_max, -max(depth_db), -0.1]
 im1 = ax.imshow(Vs_db, aspect='auto', cmap='terrain', extent=extent, vmin=200, vmax=700)
-ax.plot(np.arange(0,126+3,3), -WT_db, linestyle='--', color='k')
-ax.tick_params(top=True, labeltop=True, bottom=False, labelbottom=False)
-fig.colorbar(im1, ax=ax)
-fig.savefig(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_Vs.png')
+ax.plot(xmids, -WT_db, linestyle='--', color='k')
+ax.plot(xmids, -WT_db_smooth, color='k')
+ax.tick_params(which='both', labelbottom=False, labeltop=True, labelleft=True, labelright=False, bottom=True, top=True, left=True, right=True)
+ax.set_xlabel('Position [m]')
+ax.xaxis.set_label_position('top')
+ax.set_ylabel('Depth [m]')
+ax.set_ylim([-output_sequence_format.vocab.max_depth,0])
+cb = fig.colorbar(im1, ax=ax, label="${V_S}$ [m/s]")
+cb.minorticks_on()
+ax.minorticks_on()
+fig.savefig(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_Vs.png', bbox_inches='tight')
+np.savetxt(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_Vs.txt', Vs_db, fmt='%.2f')
 
 
-# Vs profile smoothed with a mean runnnig filter
 def mode_filter(values):
     mode = np.nanmean(values)
     return mode
+
 smoothed_map = generic_filter(Vs_db, mode_filter, size=(1,3))
-fig, ax = plt.subplots(figsize=(16,9), dpi=300)
-extent = [0, 126, -max(depth_db), -0.1]
+
+fig, ax = plt.subplots(figsize=(19*cm, 6*cm), dpi=300)
+extent = [xmid_min, xmid_max, -max(depth_db), -0.1]
 im1 = ax.imshow(smoothed_map, aspect='auto', cmap='terrain', extent=extent, vmin=200, vmax=700)
-ax.plot(np.arange(0,126+3,3), -WT_db, linestyle='--', color='k')
-ax.tick_params(top=True, labeltop=True, bottom=False, labelbottom=False)
-fig.colorbar(im1, ax=ax)
-fig.savefig(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_Vs-smooth.png')
+ax.plot(xmids, -WT_db, linestyle='--', color='k')
+ax.plot(xmids, -WT_db_smooth, color='k')
+ax.set_xlabel('Position [m]')
+ax.xaxis.set_label_position('top')
+ax.set_ylabel('Depth [m]')
+ax.tick_params(which='both', labelbottom=False, labeltop=True, labelleft=True, labelright=False, bottom=True, top=True, left=True, right=True)
+ax.set_ylim([-output_sequence_format.vocab.max_depth,0])
+cb = fig.colorbar(im1, ax=ax, label="${V_S}$ [m/s]")
+cb.minorticks_on()
+ax.minorticks_on()
+fig.savefig(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_Vs-smooth.png', bbox_inches='tight')
+### -----------------------------------------------------------------------------------------------
 
 
 
 
-# Vp profile
+
+### Vp --------------------------------------------------------------------------------------------
 Vp_db = pd.DataFrame(Vp_db).to_numpy().T
-fig, ax = plt.subplots(figsize=(16,9), dpi=300)
-extent = [0, 126, -max(depth_db), -0.1]
+fig, ax = plt.subplots(figsize=(19*cm, 6*cm), dpi=300)
+extent = [xmid_min, xmid_max, -max(depth_db), -0.1]
 im2 = ax.imshow(Vp_db, aspect='auto', cmap='terrain', extent=extent)
-ax.plot(np.arange(0,126+3,3), -WT_db, linestyle='--', color='k')
-ax.tick_params(top=True, labeltop=True, bottom=False, labelbottom=False)
-fig.colorbar(im2, ax=ax)
-fig.savefig(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_Vp.png')
+ax.plot(xmids, -WT_db, linestyle='--', color='k')
+ax.plot(xmids, -WT_db_smooth, color='k')
+ax.set_xlabel('Position [m]')
+ax.xaxis.set_label_position('top')
+ax.set_ylabel('Depth [m]')
+ax.set_ylim([-output_sequence_format.vocab.max_depth,0])
+ax.tick_params(which='both', labelbottom=False, labeltop=True, labelleft=True, labelright=False, bottom=True, top=True, left=True, right=True)
+cb = fig.colorbar(im2, ax=ax, label="${V_P}$ [m/s]")
+cb.minorticks_on()
+ax.minorticks_on()
+fig.savefig(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_Vp.png', bbox_inches='tight')
+np.savetxt(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_Vp.txt', Vp_db, fmt='%.2f')
 
 
-# Vp profile smoothed with a mean runnnig filter
 def mode_filter(values):
     mode = np.nanmean(values)
     return mode
+
 smoothed_map = generic_filter(Vp_db, mode_filter, size=(1,3))
-fig, ax = plt.subplots(figsize=(16,9), dpi=300)
-extent = [0, 126, -max(depth_db), -0.1]
+
+fig, ax = plt.subplots(figsize=(19*cm, 6*cm), dpi=300)
+extent = [xmid_min, xmid_max, -max(depth_db), -0.1]
 im2 = ax.imshow(smoothed_map, aspect='auto', cmap='terrain', extent=extent)
-ax.plot(np.arange(0,126+3,3), -WT_db, linestyle='--', color='k')
-ax.tick_params(top=True, labeltop=True, bottom=False, labelbottom=False)
-fig.colorbar(im2, ax=ax)
-fig.savefig(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_Vp-smooth.png')
+ax.plot(xmids, -WT_db, linestyle='--', color='k')
+ax.plot(xmids, -WT_db_smooth, color='k')
+ax.tick_params(which='both', labelbottom=False, labeltop=True, labelleft=True, labelright=False, bottom=True, top=True, left=True, right=True)
+ax.set_xlabel('Position [m]')
+ax.xaxis.set_label_position('top')
+ax.set_ylabel('Depth [m]')
+ax.set_ylim([-output_sequence_format.vocab.max_depth,0])
+cb = fig.colorbar(im2, ax=ax, label="${V_P}$ [m/s]")
+cb.minorticks_on()
+ax.minorticks_on()
+fig.savefig(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_Vp-smooth.png', bbox_inches='tight')
+### -----------------------------------------------------------------------------------------------
 
 
 
 
-# Soils profile
+
+### SOILS -----------------------------------------------------------------------------------------
 GM_int_db = []
-soils_dic = {'clay':0, 'silt':1, 'loam':2, 'sand':3}
+soil_to_int = {'None':0, 'clay':1, 'silt':2, 'loam':3, 'sand':4}
+int_to_soil = {0:'None', 1:'clay', 2:'silt', 3:'loam', 4:'sand'}
 for i, (soils, thicks) in enumerate(zip(GM_db, thicks_db)):
     log = []
     for soil, thick in zip(soils, thicks):
-        log.extend([soils_dic[soil]]*int(thick))
+        log.extend([soil_to_int[soil]]*int(thick))
     GM_int_db.append(log)
-GM_int_db = pd.DataFrame(GM_int_db).to_numpy().T
+GM_int_db = pd.DataFrame(GM_int_db)
+GM_int_db = GM_int_db.fillna(0)
+GM_int_db = GM_int_db.to_numpy().T
 
-fig, ax = plt.subplots(figsize=(16,9), dpi=300)
-cmap = ListedColormap(["darkorange", "gold", "lawngreen", "lightseagreen"])
-extent = [0, 126, -max(depth_db), 0]
-im3 = ax.imshow(GM_int_db, aspect='auto', cmap=cmap, extent=extent)
-ax.plot(np.arange(0,126+3,3), -WT_db, linestyle='--', color='k')
-ax.tick_params(top=True, labeltop=True, bottom=False, labelbottom=False)
-colorbar = fig.colorbar(im3, ax=ax)
-colorbar.set_ticks(list(soils_dic.values()))
-colorbar.set_ticklabels(list(soils_dic.keys()))
-fig.savefig(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_GM.png')
+cmap = ListedColormap(["white", "mediumblue", "dodgerblue", "limegreen", "yellow"])
 
 
-# Soils profile smoothed with a bicount runnnig filter
-GM_int_db = GM_int_db[:int(min(depth_db)), :].astype(int)
+fig, ax = plt.subplots(figsize=(19*cm, 6*cm), dpi=300)
+extent = [xmid_min, xmid_max, -max(depth_db), 0]
+im3 = ax.imshow(GM_int_db, aspect='auto', cmap=cmap, extent=extent, vmin=0, vmax=4, alpha=0.5)
+ax.plot(xmids, -WT_db, linestyle='--', color='k')
+ax.plot(xmids, -WT_db_smooth, color='k')
+ax.tick_params(which='both', labelbottom=False, labeltop=True, labelleft=True, labelright=False, bottom=True, top=True, left=True, right=True)
+ax.set_xlabel('Position [m]')
+ax.xaxis.set_label_position('top')
+ax.set_ylabel('Depth [m]')
+ax.set_ylim([-output_sequence_format.vocab.max_depth,0])
+colorbar = fig.colorbar(im3, ax=ax, label='Soil type')
+colorbar.set_ticks(list(soil_to_int.values()))
+colorbar.set_ticklabels(list(soil_to_int.keys()))
+ax.minorticks_on()
+fig.savefig(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_GM.png', bbox_inches='tight')
+
+# Save GM_int_db as text file
+GM_int_db_toSave = np.full(GM_int_db.shape, 'NaN', dtype=object)
+for i in range(GM_int_db_toSave.shape[0]):
+    for j in range(GM_int_db_toSave.shape[1]):
+        GM_int_db_toSave[i,j] = int_to_soil[GM_int_db[i,j]]
+np.savetxt(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_GM.txt', GM_int_db_toSave, fmt='%s')
+
+
 def mode_filter(values):
-    values = values.astype(int)
-    mode = np.bincount(values).argmax()
-    return mode
+    counts = np.bincount(values.astype(int))
+    if np.all(counts <= 1):
+        return int(values[(len(values)//2)])
+    else:
+        return counts.argmax()
+
 smoothed_map = generic_filter(GM_int_db, mode_filter, size=(1,3))
+smoothed_map = generic_filter(smoothed_map, mode_filter, size=(1,3))
 
-fig, ax = plt.subplots(figsize=(16,9), dpi=300)
-cmap = ListedColormap(["darkorange", "gold", "lawngreen", "lightseagreen"])
-extent = [0, 126, -min(depth_db), 0]
-im3 = ax.imshow(smoothed_map, aspect='auto', cmap=cmap, extent=extent)
-ax.plot(np.arange(0,126+3,3), -WT_db, linestyle='--', color='k')
-ax.tick_params(top=True, labeltop=True, bottom=False, labelbottom=False)
-colorbar = fig.colorbar(im3, ax=ax)
-colorbar.set_ticks(list(soils_dic.values()))
-colorbar.set_ticklabels(list(soils_dic.keys()))
-fig.savefig(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_GM-smooth.png')
+fig, ax = plt.subplots(figsize=(19*cm, 6*cm), dpi=300)
+extent = [xmid_min, xmid_max, -max(depth_db), 0]
+im3 = ax.imshow(smoothed_map, aspect='auto', cmap=cmap, extent=extent, vmin=0, vmax=4, alpha=0.5)
+ax.plot(xmids, -WT_db, linestyle='--', color='k')
+ax.plot(xmids, -WT_db_smooth, color='k')
+ax.tick_params(which='both', labelbottom=False, labeltop=True, labelleft=True, labelright=False, bottom=True, top=True, left=True, right=True)
+ax.set_xlabel('Position [m]')
+ax.xaxis.set_label_position('top')
+ax.set_ylabel('Depth [m]')
+ax.set_ylim([-output_sequence_format.vocab.max_depth,0])
+colorbar = fig.colorbar(im3, ax=ax, label='Soil type')
+colorbar.set_ticks(list(soil_to_int.values()))
+colorbar.set_ticklabels(list(soil_to_int.keys()))
+ax.minorticks_on()
+fig.savefig(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_GM-smooth.png', bbox_inches='tight')
+### -----------------------------------------------------------------------------------------------
 
 
 
 
-# Inverted dispersion curves in a single plot
+
+### N ---------------------------------------------------------------------------------------------
+Ns_int_db = []
+for i, (Ns, thicks) in enumerate(zip(Ns_db, thicks_db)):
+    log = []
+    for N, thick in zip(Ns, thicks):
+        log.extend([N]*int(thick))
+    Ns_int_db.append(log)
+Ns_int_db = pd.DataFrame(Ns_int_db)
+Ns_int_db = Ns_int_db.to_numpy().T
+
+fig, ax = plt.subplots(figsize=(19*cm, 6*cm), dpi=300)
+extent = [xmid_min, xmid_max, -max(depth_db), -0.1]
+cmap = ListedColormap(["tab:blue", "tab:cyan", "tab:green", "tab:orange", "tab:red"])
+im4 = ax.imshow(Ns_int_db, aspect='auto', cmap=cmap, extent=extent, vmin=6, vmax=10)
+ax.plot(xmids, -WT_db, linestyle='--', color='k')
+ax.plot(xmids, -WT_db_smooth, color='k')
+ax.tick_params(which='both', labelbottom=False, labeltop=True, labelleft=True, labelright=False, bottom=True, top=True, left=True, right=True)
+ax.set_xlabel('Position [m]')
+ax.xaxis.set_label_position('top')
+ax.set_ylabel('Depth [m]')
+ax.set_ylim([-output_sequence_format.vocab.max_depth,0])
+cb = fig.colorbar(im4, ax=ax, label='N')
+ax.minorticks_on()
+fig.savefig(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_N.png', bbox_inches='tight')
+np.savetxt(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_N.txt', Ns_int_db, fmt='%s')
+### -----------------------------------------------------------------------------------------------
+
+
+
+
+
+### DISP ------------------------------------------------------------------------------------------
 cmap = plt.get_cmap('nipy_spectral')
 colors = [cmap(i / (len(disp_db) - 1)) for i in range(len(disp_db))]
-fig, ax = plt.subplots(figsize=(16,9), dpi=300)
+fig, ax = plt.subplots(figsize=(19*cm, 6*cm), dpi=300)
 for i, disp in enumerate(disp_db):
     ax.plot(disp[0][:,0], disp[0][:,1], color=colors[i])
 ax.set_ylim([100, 500])
-fig.savefig(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_disp.png')
+ax.set_xlim([min_freq, max_freq])
+ax.set_xlabel('Frequency [Hz]')
+ax.set_ylabel("${V_R}$ [m/s]")
+ax.minorticks_on()
+fig.savefig(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_disp.png', bbox_inches='tight')
+
+disp_toSave = []
+for disp in disp_db:
+    disp_toSave.append(disp[0][:,1])
+disp_toSave = np.array(disp_toSave).T
+np.savetxt(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_disp.txt', disp_toSave, fmt='%.2f')
+np.savetxt(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_freqs.txt', disp_db[0][0][:,0], fmt='%.2f')
+### -----------------------------------------------------------------------------------------------
+
+
+
+
+
+### RMS -------------------------------------------------------------------------------------------
+with open(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_disp-rms.txt', 'w') as f:
+    f.write(f'Model ID: {model.id}\n\n')
+    f.write(f'Mean RMS: {np.mean(rms_db)} m/s')
+### -----------------------------------------------------------------------------------------------

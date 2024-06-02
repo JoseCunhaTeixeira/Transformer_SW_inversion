@@ -40,6 +40,11 @@ class SoilVocab:
         '[THICKNESS3]',
         '[THICKNESS4]',
 
+        '[N1]',
+        '[N2]',
+        '[N3]',
+        '[N4]',
+
         '0.0',
         '0.5',
         '1.0',
@@ -95,7 +100,7 @@ class SoilVocab:
 class OutputSequenceFormat:
   def __init__(self):
     self.vocab = SoilVocab()
-    self.length = 20
+    self.length = 28 #20
 
     self.allowed_tokens = self.make_allowed_tokens()
     self.forbidden_tokens = self.make_forbidden_tokens()
@@ -154,6 +159,14 @@ class OutputSequenceFormat:
                    self.vocab.word_to_index['19.0'], 
                    self.vocab.word_to_index['20.0']],
 
+                  [self.vocab.word_to_index['[N1]']],
+                   
+                  [self.vocab.word_to_index['6.0'],
+                   self.vocab.word_to_index['7.0'],
+                   self.vocab.word_to_index['8.0'],
+                   self.vocab.word_to_index['9.0'],
+                   self.vocab.word_to_index['10.0']],
+
                   [self.vocab.word_to_index['[SOIL2]'],
                    self.vocab.word_to_index['[END]']],
 
@@ -184,6 +197,14 @@ class OutputSequenceFormat:
                    self.vocab.word_to_index['18.0'],
                    self.vocab.word_to_index['19.0'],
                    self.vocab.word_to_index['20.0']],
+
+                  [self.vocab.word_to_index['[N2]']],
+                   
+                  [self.vocab.word_to_index['6.0'],
+                   self.vocab.word_to_index['7.0'],
+                   self.vocab.word_to_index['8.0'],
+                   self.vocab.word_to_index['9.0'],
+                   self.vocab.word_to_index['10.0']],
 
                   [self.vocab.word_to_index['[SOIL3]'],
                    self.vocab.word_to_index['[END]']],
@@ -216,6 +237,14 @@ class OutputSequenceFormat:
                    self.vocab.word_to_index['19.0'],
                    self.vocab.word_to_index['20.0']],
 
+                  [self.vocab.word_to_index['[N3]']],
+                   
+                  [self.vocab.word_to_index['6.0'],
+                   self.vocab.word_to_index['7.0'],
+                   self.vocab.word_to_index['8.0'],
+                   self.vocab.word_to_index['9.0'],
+                   self.vocab.word_to_index['10.0']],
+
                   [self.vocab.word_to_index['[SOIL4]'],
                    self.vocab.word_to_index['[END]']],
 
@@ -246,6 +275,14 @@ class OutputSequenceFormat:
                    self.vocab.word_to_index['18.0'],
                    self.vocab.word_to_index['19.0'],
                    self.vocab.word_to_index['20.0']],
+
+                  [self.vocab.word_to_index['[N4]']],
+                   
+                  [self.vocab.word_to_index['6.0'],
+                   self.vocab.word_to_index['7.0'],
+                   self.vocab.word_to_index['8.0'],
+                   self.vocab.word_to_index['9.0'],
+                   self.vocab.word_to_index['10.0']],
 
                   [self.vocab.word_to_index['[END]']],
                 ]

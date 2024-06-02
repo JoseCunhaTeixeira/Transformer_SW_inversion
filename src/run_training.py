@@ -8,8 +8,6 @@ Date : April 30, 2024
 
 
 
-from keras.metrics import Accuracy
-
 import numpy as np
 
 from folders import PATH_INPUT
@@ -48,17 +46,11 @@ index_to_word = output_sequence_format.vocab.index_to_word
 
 
 ### LOAD DATA -------------------------------------------------------------------------------------
-data_folder = f'{PATH_INPUT}/training_data6/'
-N_samples = 1000 # Number of samples to load
+data_folder = f'{PATH_INPUT}/training_data7/'
+N_samples = 1000000 # Number of samples to load
 
-X = load_X(data_folder, N_samples)
+X, X_noise = load_X(data_folder, N_samples, noise=False)
 y = load_y(data_folder, N_samples, word_to_index, N_layers=4)
-
-np.save(f'{data_folder}X_floats.npy', X)
-np.save(f'{data_folder}y.npy', y)
-
-X = np.load(f'{data_folder}X_floats.npy')
-y = np.load(f'{data_folder}y.npy')
 
 
 print('\033[93m\nDATASET EXAMPLE\033[0m')
@@ -72,14 +64,14 @@ print(f'{X.shape = }')
 print(f'{y.shape = }')
 
 
-# Uncomment to test model with only one sample
-shape = X.shape
-first_sample_X = X[0, ...].reshape(1, X.shape[1], 1)
-X = np.full(shape, first_sample_X)
+# # Uncomment to test model with only one sample
+# shape = X.shape
+# first_sample_X = X[0, ...].reshape(1, X.shape[1], 1)
+# X = np.full(shape, first_sample_X)
 
-shape_y = y.shape
-first_sample_y = y[0, ...].reshape(1, y.shape[1])
-y = np.full(shape_y, first_sample_y)
+# shape_y = y.shape
+# first_sample_y = y[0, ...].reshape(1, y.shape[1])
+# y = np.full(shape_y, first_sample_y)
 ### -----------------------------------------------------------------------------------------------
 
 
@@ -87,7 +79,7 @@ y = np.full(shape_y, first_sample_y)
 
 
 ### SPLIT DATA ------------------------------------------------------------------------------------
-train_ratio = 0.75
+train_ratio = 0.80
 train_end_idx = int(train_ratio*X.shape[0])
 
 X_train = X[:train_end_idx, ...]
@@ -98,7 +90,7 @@ N_samples_train = X_train.shape[0]
 
 val_ratio = (1 - train_ratio) / 2
 val_start_idx = train_end_idx
-val_end_idx = val_start_idx + int(val_ratio*X.shape[0])
+val_end_idx = val_start_idx + int(val_ratio*X.shape[0]) + 1
 
 X_val = X[val_start_idx:val_end_idx, ...]
 y_val = y[val_start_idx:val_end_idx, ...]
@@ -164,7 +156,7 @@ transformer = Transformer(input_sequence_format, output_sequence_format)
 ### TRAINING --------------------------------------------------------------------------------------
 transformer.train(X_train, y_train,
                   X_val, y_val,
-                  epochs=1, batch_size=64)
+                  epochs=100, batch_size=64)
 ### -----------------------------------------------------------------------------------------------
 
 
@@ -179,27 +171,10 @@ transformer.save_model()
 
 
 
-
-### INFERENCE -------------------------------------------------------------------------------------
-for i_sample in range(X_test.shape[0]):
-  input_seq = X_test[i_sample, ...].reshape(1, X_test.shape[1], 1)
-  target_seq = y_test[i_sample, 1:-1]
-
-  decoded_seq = transformer.decode_seq(input_seq)
-  # decoded_seq = transformer.decode_seq_restrictive(input_seq)
-
-  m = Accuracy()
-  accuracy = m(target_seq, decoded_seq).numpy()
-
-  print('\n\n----------------------------------------------')
-  print('Decoded Sequence:\n', list(decoded_seq))
-  print('\nTarget Sequence:\n', list(target_seq))
-  print('\nTARGET | DECODED - O/X:')
-  for i in range(len(target_seq)):
-      symbol = 'O' if target_seq[i] == decoded_seq[i] else 'X'
-      print(f'{i+1}: {index_to_word[target_seq[i]]} | {index_to_word[decoded_seq[i]]} - {symbol}')
-  print(f'\nAccuracy: {accuracy*100} %')
-  print('----------------------------------------------\n\n')
-
-  input('Press Enter to continue...')
+### INFERENCE TEST --------------------------------------------------------------------------------
+N_samples_to_evaluate = 2000
+if N_samples_to_evaluate > N_samples_test:
+    N_samples_to_evaluate = N_samples_test
+    
+transformer.evaluate(X_test[:N_samples_to_evaluate,...], y_test[:N_samples_to_evaluate,...])
 ### -----------------------------------------------------------------------------------------------

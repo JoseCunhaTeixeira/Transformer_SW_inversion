@@ -11,7 +11,7 @@ Date : April 30, 2024
 import random
 from tqdm import tqdm
 from scipy.interpolate import interp1d
-from numpy import geomspace, zeros, argmax, arange, min, max, arange, array, loadtxt
+from numpy import geomspace, arange, min, max, arange, array, loadtxt, random
 
 
 
@@ -61,7 +61,7 @@ def resamp(f, v, axis_resamp=None, type="wavelength"):
 
 
     elif "frequency" in type :
-        func_v = interp1d(f, v)
+        func_v = interp1d(f, v, fill_value='extrapolate')
         if type == "frequency":
             f_resamp = axis_resamp
         elif type == "frequency-log":
@@ -77,12 +77,22 @@ def resamp(f, v, axis_resamp=None, type="wavelength"):
 
 
 ### -----------------------------------------------------------------------------------------------
-def load_X(data_folder, N_samples):
+def load_X(data_folder, N_samples, noise=False):
   X = loadtxt(f'{data_folder}DCs.txt')
   X = X[:N_samples, ...]
+
   X = X[:, 5:] # Only train with frequencies between 20 and 50 Hz, instead of 15 and 50 Hz
+
+  print(f'\n{min(X) = }\n{max(X) = }')
+
   X = (X-150) / (400-150)
   X = X.reshape(X.shape[0], X.shape[1], 1)
+
+  if noise == True:
+    noise = random.normal(loc=0, scale=0.01, size=X.shape)
+    X_noise = X + noise
+    return X, X_noise
+
   return X
 ### -----------------------------------------------------------------------------------------------
 
@@ -95,26 +105,34 @@ def load_y(data_folder, N_samples, soil_to_index, N_layers):
   GMs = loadtxt(f'{data_folder}/GMs.txt', dtype=str)
   THKs = loadtxt(f'{data_folder}/THKs.txt', dtype=str)
   WTs = loadtxt(f'{data_folder}/WTs.txt', dtype=str)
+  COORDs = loadtxt(f'{data_folder}/Ns.txt', dtype=str)
+
   GMs = GMs[:N_samples, ...]
   THKs = THKs[:N_samples, ...]
   WTs = WTs[:N_samples]
+  COORDs = COORDs[:N_samples, ...]
+
   y_index = []
-  for soils, thicknesses, WT in tqdm(zip(GMs, THKs, WTs), total=N_samples):
+  for soils, thicknesses, WT, Ns in tqdm(zip(GMs, THKs, WTs, COORDs), total=N_samples):
     sequence_idx = [soil_to_index['[START]']]
     sequence_idx.append(soil_to_index['[WT]'])
     sequence_idx.append(soil_to_index[WT])
     cpt_layers = 0
-    for soil, thickness in zip(soils, thicknesses):
+    for soil, thickness, N in zip(soils, thicknesses, Ns):
       if soil != 'None' and thickness != 'None':
         sequence_idx.append(soil_to_index[f'[SOIL{cpt_layers+1}]'])
         sequence_idx.append(soil_to_index[soil])
         sequence_idx.append(soil_to_index[f'[THICKNESS{cpt_layers+1}]'])
         sequence_idx.append(soil_to_index[f'{float(thickness):.1f}'])
+        sequence_idx.append(soil_to_index[f'[N{cpt_layers+1}]'])
+        sequence_idx.append(soil_to_index[f'{float(N):.1f}'])
         cpt_layers += 1
       else :
         break
     sequence_idx.append(soil_to_index['[END]'])
     while cpt_layers < N_layers:
+      sequence_idx.append(soil_to_index[f'[PAD]'])
+      sequence_idx.append(soil_to_index[f'[PAD]'])
       sequence_idx.append(soil_to_index[f'[PAD]'])
       sequence_idx.append(soil_to_index[f'[PAD]'])
       sequence_idx.append(soil_to_index[f'[PAD]'])
