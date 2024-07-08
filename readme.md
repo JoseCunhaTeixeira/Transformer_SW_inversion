@@ -6,4 +6,4 @@ This project consists solving petrophysical inversion of surface-wave dispersion
 A Language Model inspired by Neural Machine Translation and Spoeech recognition is used to infer a textual sequence describing the propagating medium.
 2D soil profiles showing lythofacies, petrophysical parameters and groundwater table height are then constructed in post-processing followinf the textual descriptions given by the model.
 
-![image](https://github.com/JoseCunhaTeixeira/Trasnformer_SW_inversion/assets/148117375/eae2ac89-04bf-442b-bf47-3c5a6fe42b43)
+![Screenshot from 2024-07-08 15-18-04](https://github.com/JoseCunhaTeixeira/Trasnformer_SW_inversion/assets/148117375/074bd457-1acf-40c9-8ae7-ea47b9027de7)
