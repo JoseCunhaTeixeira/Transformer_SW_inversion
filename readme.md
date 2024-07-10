@@ -8,8 +8,8 @@ A Language Model inspired by Neural Machine Translation and Speech recognition i
 
 ![Screenshot from 2024-07-08 15-18-04](https://github.com/JoseCunhaTeixeira/Trasnformer_SW_inversion/assets/148117375/074bd457-1acf-40c9-8ae7-ea47b9027de7)
 
-[Figure3.pdf](https://github.com/user-attachments/files/16164804/Figure3.pdf)
+![image](https://github.com/JoseCunhaTeixeira/Trasnformer_SW_inversion/assets/148117375/28105240-cf89-4fbe-9ca7-ababeb1fd46a)
 
-[Figure4.pdf](https://github.com/user-attachments/files/16164803/Figure4.pdf)
+![image](https://github.com/JoseCunhaTeixeira/Trasnformer_SW_inversion/assets/148117375/93cce05d-8dc7-4667-8e05-5a40477c80fa)
 
 Paper to come...
