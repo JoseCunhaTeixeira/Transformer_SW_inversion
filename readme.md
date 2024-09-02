@@ -1,4 +1,4 @@
-![repository-open-graph-template](https://github.com/JoseCunhaTeixeira/Trasnformer_SW_inversion/assets/148117375/fe8c8189-c33a-48d8-941a-a301e20def6b)
+![Design sans titre (1)](https://github.com/user-attachments/assets/e8d6e170-03a2-4006-bf7e-91ec961d44cc)
 
 This project is part of my PhD developments at SNCF Réseau, Sorbonne University and Mines Paris - PSL.
 
