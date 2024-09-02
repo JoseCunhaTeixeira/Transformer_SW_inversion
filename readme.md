@@ -1,4 +1,4 @@
-This proj![Ajouter des lignes dans le corps du texte](https://github.com/user-attachments/assets/52a982a6-97af-44c7-9293-6d2d3fbd3091)
+![Petrophysical inversion](https://github.com/user-attachments/assets/d0c575db-16d7-493d-ad85-c497c84b45b7)
 
 ect is part of my PhD developments at SNCF Réseau, Sorbonne University and Mines Paris - PSL.
 
