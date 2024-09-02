@@ -1,6 +1,6 @@
-![Design sans titre (1)](https://github.com/user-attachments/assets/e8d6e170-03a2-4006-bf7e-91ec961d44cc)
+This proj![Ajouter des lignes dans le corps du texte](https://github.com/user-attachments/assets/52a982a6-97af-44c7-9293-6d2d3fbd3091)
 
-This project is part of my PhD developments at SNCF Réseau, Sorbonne University and Mines Paris - PSL.
+ect is part of my PhD developments at SNCF Réseau, Sorbonne University and Mines Paris - PSL.
 
 It consists solving petrophysical inversion of surface-wave dispersion curves with Artificial Intelligence.
 A Language Model inspired by Neural Machine Translation and Speech recognition is used to infer a textual sequence describing the propagating medium.
