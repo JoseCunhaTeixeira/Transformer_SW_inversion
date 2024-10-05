@@ -1,10 +1,10 @@
 ![Petrophysical inversion](https://github.com/user-attachments/assets/d0c575db-16d7-493d-ad85-c497c84b45b7)
 
-ect is part of my PhD developments at SNCF Réseau, Sorbonne University and Mines Paris - PSL.
+This project is part of my PhD developments at SNCF Réseau, Sorbonne University and Mines Paris - PSL.
 
 It consists solving petrophysical inversion of surface-wave dispersion curves with Artificial Intelligence.
 A Language Model inspired by Neural Machine Translation and Speech recognition is used to infer a textual sequence describing the propagating medium.
-2D soil profiles showing lythofacies, petrophysical parameters and groundwater table height are then constructed in post-processing followinf the textual descriptions given by the model.
+2D soil profiles showing lythofacies, petrophysical parameters and groundwater table height are then constructed in post-processing following the textual descriptions given by the model.
 
 ![Screenshot from 2024-07-08 15-18-04](https://github.com/JoseCunhaTeixeira/Trasnformer_SW_inversion/assets/148117375/074bd457-1acf-40c9-8ae7-ea47b9027de7)
 
