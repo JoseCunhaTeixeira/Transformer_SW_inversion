@@ -1,4 +1,4 @@
-![Git_NLP_Passive](https://github.com/user-attachments/assets/29a70144-df93-4c56-825c-e2a877d87674)
+![Git_NLP_Passive](https://github.com/user-attachments/assets/b8bce3e3-14cb-4d20-a5fa-c6b1a0501084)
 
 This project is part of my PhD developments at SNCF Réseau, Sorbonne University and Mines Paris - PSL.
 
