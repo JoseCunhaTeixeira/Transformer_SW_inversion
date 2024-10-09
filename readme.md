@@ -1,4 +1,4 @@
-![Petrophysical inversion](https://github.com/user-attachments/assets/d0c575db-16d7-493d-ad85-c497c84b45b7)
+![Git_NLP_Passive](https://github.com/user-attachments/assets/29a70144-df93-4c56-825c-e2a877d87674)
 
 This project is part of my PhD developments at SNCF Réseau, Sorbonne University and Mines Paris - PSL.
 
