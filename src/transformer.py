@@ -1,6 +1,6 @@
 """
 Author : José CUNHA TEIXEIRA
-License : SNCF Réseau, UMR 7619 METIS
+License : SNCF Réseau, UMR 7619 METIS, Sorbonne Université
 Date : April 30, 2024
 """
 
@@ -10,7 +10,7 @@ Date : April 30, 2024
 
 from keras import Model
 from keras import ops
-from keras.layers import Input, Conv1D, MaxPooling1D, Dense
+from keras.layers import Input, Conv1D, Dense, MaxPooling1D
 from keras.optimizers import RMSprop
 from keras.callbacks import EarlyStopping
 from keras.metrics import Accuracy
@@ -24,9 +24,9 @@ from seaborn import heatmap
 from pickle import dump
 from datetime import datetime
 import matplotlib.pyplot as plt
+import json
 
 from folders import PATH_MODELS
-
 
 
 
@@ -50,93 +50,82 @@ class RestrictiveSampler(Sampler):
 
 
 class Transformer:
-    def __init__(self, input_sequence_format, output_sequence_format):
-
-        self.input_sequence_format = input_sequence_format
-        self.output_sequence_format = output_sequence_format
-
+    def __init__(self, params):
+        self.params = params
+        
         self.encoder_emb_dim = 64
         self.decoder_emb_dim = 64
-        
-
         self.intermediate_dim = 256
         self.num_heads = 8
-        
         self.encoder_N_layers = 4
         self.decoder_N_layers = 4
-    
 
         self.model = self.build_model()
-
         self.id = self.generate_id()
-
-        self.save_specs()
-
+        self.dump_params()
 
 
-    def build_encoder(self):
-        encoder_inputs = Input(shape=(self.input_sequence_format.length, 1))
+    def build_model(self):
+        ### Feature Encoder -----------------------------------------------------------------------
+        feature_encoder_inputs = Input(shape=(self.params['input_seq_format']['length'], 1))
+        
+        x1 = Conv1D(16, 3, activation='relu', padding='same')(feature_encoder_inputs)
+        x1 = Conv1D(16, 3, activation='relu', padding='same')(x1)
+        x1 = MaxPooling1D(pool_size=2)(x1)
 
-        c1 = Conv1D(16, 3, activation='relu', padding='same')(encoder_inputs)
-        c1 = Conv1D(16, 3, activation='relu', padding='same')(c1)
-        p1 = MaxPooling1D(pool_size=2)(c1)
+        x1 = Conv1D(32, 3, activation='relu', padding='same')(x1)
+        x1 = Conv1D(32, 3, activation='relu', padding='same')(x1)
+        x1 = MaxPooling1D(pool_size=2)(x1)
 
-        c2 = Conv1D(32, 3, activation='relu', padding='same')(p1)
-        c2 = Conv1D(32, 3, activation='relu', padding='same')(c2)
-        p2 = MaxPooling1D(pool_size=2)(c2)
+        x1 = Conv1D(self.encoder_emb_dim, 3, activation='relu', padding='same')(x1)
+        x1 = Conv1D(self.encoder_emb_dim, 3, activation='relu', padding='same')(x1)
 
-        c3 = Conv1D(64, 3, activation='relu', padding='same')(p2)
-        c3 = Conv1D(64, 3, activation='relu', padding='same')(c3)
+        feature_encoder_outputs = x1
+        ### ---------------------------------------------------------------------------------------
 
-        position_encoding = SinePositionEncoding()(c3)
-        x1 = c3 + position_encoding
 
+        ### Transformer Encoder -------------------------------------------------------------------
+        # Positional Encoding
+        position_encoding = SinePositionEncoding()(feature_encoder_outputs)
+        x2 = feature_encoder_outputs + position_encoding
+
+        # Encoder
         for _ in range(self.encoder_N_layers):
-            x1 = TransformerEncoder(intermediate_dim=self.intermediate_dim, num_heads=self.num_heads)(inputs=x1)
-
-        encoder_outputs = x1
-
-        encoder = Model(encoder_inputs, encoder_outputs)
-
-        return encoder, encoder_inputs, encoder_outputs
+            x2 = TransformerEncoder(intermediate_dim=self.intermediate_dim, num_heads=self.num_heads)(inputs=x2)
+        
+        encoder_outputs = x2
+        ### ---------------------------------------------------------------------------------------
 
 
-
-    def build_decoder(self):
+        ### Transformer Decoder -------------------------------------------------------------------
         decoder_inputs = Input(shape=(None,))
-        encoded_seq_inputs = Input(shape=(None, self.encoder_emb_dim))
 
-        x2 = TokenAndPositionEmbedding(
-            vocabulary_size=self.output_sequence_format.vocab.size,
-            sequence_length=self.output_sequence_format.length,
+        # Positional Encoding
+        x3 = TokenAndPositionEmbedding(
+            vocabulary_size=self.params['output_seq_format']['vocab_size'],
+            sequence_length=self.params['output_seq_format']['length'],
             embedding_dim=self.decoder_emb_dim,
             # mask_zero=True,
         )(decoder_inputs)
 
+        # Decoder
         for _ in range(self.decoder_N_layers):
-            x2 = TransformerDecoder(intermediate_dim=self.intermediate_dim, num_heads=self.num_heads)(
-                decoder_sequence=x2, encoder_sequence=encoded_seq_inputs)
+            x3 = TransformerDecoder(intermediate_dim=self.intermediate_dim, num_heads=self.num_heads)(
+                decoder_sequence=x3, encoder_sequence=encoder_outputs)
 
-        decoder_outputs = Dense(self.output_sequence_format.vocab.size, activation='softmax')(x2)
-        decoder = Model([decoder_inputs, encoded_seq_inputs], decoder_outputs)
+        decoder_outputs = Dense(self.params['output_seq_format']['vocab_size'], activation='softmax')(x3)
+        ### ---------------------------------------------------------------------------------------
 
-        return decoder, decoder_inputs, decoder_outputs
-
-
-
-    def build_model(self):
-        _, encoder_inputs, encoder_outputs = self.build_encoder()
-        decoder, decoder_inputs, decoder_outputs = self.build_decoder()
-
-        decoder_outputs = decoder([decoder_inputs, encoder_outputs])
-
-        model = Model([encoder_inputs, decoder_inputs], decoder_outputs, name='Transformer')
-
+        
+        ### Model ----------------------------------------------------------------------------------
+        model = Model([feature_encoder_inputs, decoder_inputs], decoder_outputs, name='Transformer')
         model.compile(optimizer=RMSprop(learning_rate=1e-3), loss='sparse_categorical_crossentropy', metrics=['accuracy'])
         model.summary()
-        
-        return model
+        ### ---------------------------------------------------------------------------------------
     
+
+        return model
+
 
 
     def generate_id(self):
@@ -149,83 +138,117 @@ class Transformer:
         return id
     
 
-    def save_specs(self):
+
+    def dump_params(self):
         folder_path = f'{PATH_MODELS}/{self.id}/'
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
+        if 'model_params' not in self.params:
+            model_params = {
+                'id': self.id,
+                'encoder_emb_dim': self.encoder_emb_dim,
+                'decoder_emb_dim': self.decoder_emb_dim,
+                'intermediate_dim': self.intermediate_dim,
+                'num_heads': self.num_heads,
+                'encoder_N_layers': self.encoder_N_layers,
+                'decoder_N_layers': self.decoder_N_layers,
+                'trained': False,
+                'training_number' : 0,
+                'tested': False,
+                'test_number' : 0
+            }
+            self.params['model_params'] = model_params 
+        with open(f'{PATH_MODELS}/{self.id}/{self.id}_params.json', 'w') as f:
+            json.dump(self.params, f, indent=2)
+            
+    
+    
+    def reload_params(self):
+        with open(f'{PATH_MODELS}/{self.id}/{self.id}_params.json', 'r') as f:
+            self.params = json.load(f)
+        self.save_model()
 
-        with open(f'{PATH_MODELS}/{self.id}/{self.id}_model_specs.txt', 'w') as f:
-            f.write(f'Model ID: {self.id}\n\n')
-            f.write(f'Encoder Embedding Dimension: {self.encoder_emb_dim}\n')
-            f.write(f'Decoder Embedding Dimension: {self.decoder_emb_dim}\n')
-            f.write(f'Intermediate Dimension: {self.intermediate_dim}\n')
-            f.write(f'Number of Heads: {self.num_heads}\n')
-            f.write(f'Encoder Number of Layers: {self.encoder_N_layers}\n')
-            f.write(f'Decoder Number of Layers: {self.decoder_N_layers}\n')
-            f.write(f'Input Sequence Length: {self.input_sequence_format.length}\n')
-            f.write(f'Output Sequence Length: {self.output_sequence_format.length}\n')
 
 
-
-    def train(self, X_train, y_train, X_val, y_val, epochs=50, batch_size=64):
+    def train(self, X_train, y_train, epochs=50, batch_size=64, data_name=None, **kwargs):
         starting_date = datetime.now()
 
-        history = self.model.fit(
-            [X_train, y_train[:, :-1]], y_train[:, 1:],
-            epochs=epochs,
-            batch_size=batch_size,
-            shuffle=True,
-            validation_data=([X_val, y_val[:, :-1]], y_val[:, 1:]),
-            callbacks=[EarlyStopping(monitor='val_loss', start_from_epoch=10, patience=10)],
-            verbose=1
-        )
+        if 'X_val' in kwargs and 'y_val' in kwargs:
+            X_val = kwargs['X_val']
+            y_val = kwargs['y_val']
+
+            history = self.model.fit(
+                [X_train, y_train[:, :-1, ...]], y_train[:, 1:, ...],
+                epochs=epochs,
+                batch_size=batch_size,
+                shuffle=True,
+                validation_data=([X_val, y_val[:, :-1, ...]], y_val[:, 1:, ...]),
+                callbacks=[EarlyStopping(monitor='val_loss', start_from_epoch=10, patience=10)],
+                verbose=1
+            )
+
+        else:
+            history = self.model.fit(
+                [X_train, y_train[:, :-1, ...]], y_train[:, 1:, ...],
+                epochs=epochs,
+                batch_size=batch_size,
+                shuffle=True,
+                verbose=1
+            )
+
 
         ending_date = datetime.now()
         training_time = ending_date - starting_date
         hours, remainder = divmod(training_time.seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
 
+        training_params = {
+            'data_name': data_name,
+            'starting_date': starting_date.strftime('%Y-%m-%d %H:%M:%S'),
+            'ending_date': ending_date.strftime('%Y-%m-%d %H:%M:%S'),
+            'training_time': f'{hours} hours {minutes} minutes {seconds} seconds',
+            'train_samples': X_train.shape[0],
+            'val_samples': X_val.shape[0] if 'X_val' in kwargs and 'y_val' in kwargs else None,
+            'batch_size': batch_size,
+            'epochs': epochs,
+            'train_loss': history.history['loss'][-1],
+            'val_loss': history.history['val_loss'][-1] if 'X_val' in kwargs and 'y_val' in kwargs else None,
+            'train_accuracy': history.history['accuracy'][-1],
+            'val_accuracy': history.history['val_accuracy'][-1] if 'X_val' in kwargs and 'y_val' in kwargs else None
+        }
+        
+        training_number = self.params['model_params']['training_number'] + 1
+        self.params[f'training_params_{training_number}'] = training_params
+        self.params['model_params']['trained'] = True
+        self.params['model_params']['training_number'] = training_number
+        self.dump_params()
 
-        folder_path = f'{PATH_MODELS}/{self.id}/'
-        if not os.path.exists(folder_path):
-            os.makedirs(folder_path)
 
-        with open(f'{PATH_MODELS}/{self.id}/{self.id}_training_info.txt', 'w') as f:
-            f.write(f'Model ID: {self.id}\n\n')
-            f.write(f'Training starting date: {starting_date}\n')
-            f.write(f'Training ending date: {ending_date}\n')
-            f.write(f'Training Time: {hours} hours {minutes} minutes {seconds} seconds\n')
-            f.write(f'Train samples: {X_train.shape[0]}\n')
-            f.write(f'Validation samples: {X_val.shape[0]}\n')
-            f.write(f'Batch size: {batch_size}\n')
-            f.write(f'Epochs: {len(history.history["loss"])}\n')
-            f.write(f'Training Loss: {history.history["loss"][-1]}\n')
-            f.write(f'Validation Loss: {history.history["val_loss"][-1]}\n')
-            f.write(f'Training Accuracy: {history.history["accuracy"][-1]}\n')
-            f.write(f'Validation Accuracy: {history.history["val_accuracy"][-1]}\n')
-
-        self.plot_training_history(history)
+        self.plot_training_history(history, **kwargs)
 
 
 
-    def plot_training_history(self, history):
+    def plot_training_history(self, history, **kwargs):
         fig, ax = plt.subplots(figsize=(16, 10), dpi=300)
 
         # Plot Loss
         ax.plot(history.history['loss'])
-        ax.plot(history.history['val_loss'])
+        if 'X_val' in kwargs and 'y_val' in kwargs:
+            ax.plot(history.history['val_loss'])
+            ax.legend(['Training dataset', 'Validation dataset'])
         ax.set_xlabel('Epochs')
         ax.set_ylabel('Categorical Crossentropy Loss')
-        ax.legend(['Training dataset', 'Validation dataset'])
 
         # Plot Accuracy
         ax_twin = ax.twinx()
         ax_twin.plot(history.history['accuracy'], linestyle='--')
-        ax_twin.plot(history.history['val_accuracy'], linestyle='--')
+        if 'X_val' in kwargs and 'y_val' in kwargs:
+            ax_twin.plot(history.history['val_accuracy'], linestyle='--')
         ax_twin.set_xlabel('Epochs')
         ax_twin.set_ylabel('Accuracy')
 
-        fig.savefig(f'{PATH_MODELS}/{self.id}/{self.id}_training_history.png', format='png', dpi='figure', bbox_inches='tight')
+        training_number = self.params['model_params']['training_number']
+        fig.savefig(f'{PATH_MODELS}/{self.id}/{self.id}_training_{training_number}_history.png', format='png', dpi='figure', bbox_inches='tight')
 
 
 
@@ -243,16 +266,16 @@ class Transformer:
             hidden_states = None
             return logits, hidden_states, cache
 
-        prompt = [self.output_sequence_format.vocab.word_to_index['[START]']]
-        while len(prompt) < self.output_sequence_format.length:
-            prompt.append(self.output_sequence_format.vocab.word_to_index['[PAD]'])
+        prompt = [self.params['output_seq_format']['word_to_index']['[START]']]
+        while len(prompt) < self.params['output_seq_format']['length']:
+            prompt.append(self.params['output_seq_format']['word_to_index']['[PAD]'])
         prompt = np.array(prompt).reshape(1, len(prompt))
         prompt = ops.convert_to_tensor(prompt)
 
         decoded_seq = GreedySampler()(
             next,
             prompt,
-            stop_token_ids=[self.output_sequence_format.vocab.word_to_index['[END]']],
+            stop_token_ids=[self.params['output_seq_format']['word_to_index']['[END]']],
             index=1
         )
 
@@ -268,16 +291,16 @@ class Transformer:
             hidden_states = None
             return logits, hidden_states, cache
 
-        prompt = [self.output_sequence_format.vocab.word_to_index['[START]']]
-        while len(prompt) < self.output_sequence_format.length:
-            prompt.append(self.output_sequence_format.vocab.word_to_index['[PAD]'])
+        prompt = [self.params['output_seq_format']['word_to_index']['[START]']]
+        while len(prompt) < self.params['output_seq_format']['length']:
+            prompt.append(self.params['output_seq_format']['word_to_index']['[PAD]'])
         prompt = np.array(prompt).reshape(1, len(prompt))
         prompt = ops.convert_to_tensor(prompt)
 
-        decoded_seq  = RestrictiveSampler(self.output_sequence_format.forbidden_tokens)(
+        decoded_seq  = RestrictiveSampler(self.params['output_seq_format']['forbidden_tokens'])(
             next,
             prompt,
-            stop_token_ids=[self.output_sequence_format.vocab.word_to_index['[END]']],
+            stop_token_ids=[self.params['output_seq_format']['word_to_index']['[END]']],
             index=1
             )
 
@@ -285,8 +308,10 @@ class Transformer:
     
 
 
-    def evaluate(self, X_test, y_test):
-        words = self.output_sequence_format.vocab.words.copy()
+    def evaluate(self, X_test, y_test, data_name=None):
+        starting_date = datetime.now()
+
+        words = self.params['output_seq_format']['vocab']
         conf_matrix = np.zeros((len(words), len(words)))
 
         accuracies = []
@@ -337,7 +362,8 @@ class Transformer:
         recall = np.nanmean(recalls)
         F1 = np.nanmean(F1s)
 
-        
+        ending_date = datetime.now()
+
         print(f'\nAccuracy: {int(accuracy*100)} %')
         print(f'Precision: {int(precision*100)} %')
         print(f'Recall: {int(recall*100)} %')
@@ -348,20 +374,28 @@ class Transformer:
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
 
-        with open(f'{PATH_MODELS}/{self.id}/{self.id}_test_info.txt', 'w') as f:
-            f.write(f'Model ID: {self.id}\n\n')
-            f.write(f'Test ending date: {datetime.now()}\n')
-            f.write(f'Test samples: {X_test.shape[0]}\n')
-            f.write(f'Accuracy: {accuracy:.2f}\n')
-            f.write(f'Precision: {precision:.2f}\n')
-            f.write(f'Recall: {recall:.2f}\n')
-            f.write(f'F1: {F1:.2f}\n\n')
-
-            for i, word in enumerate(words):
-                f.write(f'\n{word}:\n')
-                f.write(f'Precision: {precisions[i]:.2f}\n')
-                f.write(f'Recall: {recalls[i]:.2f}\n')
-                f.write(f'F1: {F1s[i]:.2f}\n')
+        test_params = {
+            'data_name': data_name,
+            'starting_date': starting_date.strftime('%Y-%m-%d %H:%M:%S'),
+            'ending_date': ending_date.strftime('%Y-%m-%d %H:%M:%S'),
+            'test_samples': X_test.shape[0],
+            'accuracy': float(accuracy),
+            'precision': float(precision),
+            'recall': float(recall),
+            'F1': float(1)            
+        }
+        for i, word in enumerate(words):
+            test_params[word] = {
+                'precision': None if np.isnan(precisions[i]) else precisions[i],
+                'recall': None if np.isnan(recalls[i]) else recalls[i],
+                'F1': None if np.isnan(F1s[i]) else F1s[i]
+            }
+        
+        test_number = self.params['model_params']['test_number'] + 1
+        self.params[f'test_params_{test_number}'] = test_params
+        self.params['model_params']['tested'] = True
+        self.params['model_params']['test_number'] = test_number
+        self.dump_params()
 
 
         fig, ax = plt.subplots(dpi=300, figsize=(16, 9))
@@ -369,12 +403,12 @@ class Transformer:
         ax.set_xlabel('Sample (#)')
         ax.set_ylabel('Accuracy (%)')
         ax.set_ylim([0,1])
-        fig.savefig(f'{PATH_MODELS}/{self.id}/{self.id}_test_accuracies.png', format='png', dpi='figure', bbox_inches='tight')
+        fig.savefig(f'{PATH_MODELS}/{self.id}/{self.id}_test{test_number}_accuracies.png', format='png', dpi='figure', bbox_inches='tight')
 
         fig, ax = plt.subplots(dpi=300, figsize=(16, 9))
         heatmap(conf_matrix, annot=True, cmap='Reds', ax=ax, xticklabels=words, yticklabels=words)
         ax.set_xlabel('Decoded Words')
         ax.set_ylabel('Expected Words')
         ax.set_title('Confusion Matrix')
-        fig.savefig(f'{PATH_MODELS}/{self.id}/{self.id}_test_confusion_matrix.png', format='png', dpi='figure', bbox_inches='tight')
+        fig.savefig(f'{PATH_MODELS}/{self.id}/{self.id}_test{test_number}_confusion_matrix.png', format='png', dpi='figure', bbox_inches='tight')
         ### -----------------------------------------------------------------------------------------------

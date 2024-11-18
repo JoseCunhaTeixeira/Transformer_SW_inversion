@@ -1,6 +1,6 @@
 """
 Author : José CUNHA TEIXEIRA
-License : SNCF Réseau, UMR 7619 METIS
+License : SNCF Réseau, UMR 7619 METIS, Sorbonne Université
 Date : April 30, 2024
 """
 
@@ -10,73 +10,30 @@ Date : April 30, 2024
 
 import sys
 import numpy as np
-import matplotlib.pyplot as plt
 from io import StringIO
-from subprocess import run, PIPE
+from subprocess import run, PIPE, CalledProcessError
 import random
 from tqdm import tqdm
+import os
+import matplotlib.pyplot as plt
 
-from folders import PATH_INPUT
+from folders import PATH_INPUT, PATH_RPMODEL
 from misc import generate_numbers
 
 # Import Santiludo functions
-sys.path.append('/home/jteixeira/Documents/PhD_Monitoring/Work/Processing/Tools/Santiludo_layered/')
+sys.path.append(PATH_RPMODEL)
 from lib.VGfunctions import vanGen
 from lib.RPfunctions import hillsAverage, effFluid, hertzMindlin, biotGassmann
 from lib.TTDSPfunctions import writeVelocityModel, readDispersion
+import json
 
 
 
 
 
+### SITE NAME -------------------------------------------------------------------------------------
+site = 'Grand_Est'
 ### -----------------------------------------------------------------------------------------------
-files = [
-        "0.7500.M0.pvc",
-        "3.7500.M0.pvc",
-        "6.7500.M0.pvc",
-        "9.7500.M0.pvc",
-        "12.7500.M0.pvc",
-        "15.7500.M0.pvc",
-        "18.7500.M0.pvc",
-        "21.7500.M0.pvc",
-        "24.7500.M0.pvc",
-        "27.7500.M0.pvc",
-        "30.7500.M0.pvc",
-        "33.7500.M0.pvc",
-        "36.7500.M0.pvc",
-        "39.7500.M0.pvc",
-        "42.7500.M0.pvc",
-        "45.7500.M0.pvc",
-        "48.7500.M0.pvc",
-        "51.7500.M0.pvc",
-        "54.7500.M0.pvc",
-        "57.7500.M0.pvc",
-        "60.7500.M0.pvc",
-        "63.7500.M0.pvc",
-        "66.7500.M0.pvc",
-        "69.7500.M0.pvc",
-        "72.7500.M0.pvc",
-        "75.7500.M0.pvc",
-        "78.7500.M0.pvc",
-        "81.7500.M0.pvc",
-        "84.7500.M0.pvc",
-        "87.7500.M0.pvc",
-        "90.7500.M0.pvc",
-        "93.7500.M0.pvc",
-        "96.7500.M0.pvc",
-        "99.7500.M0.pvc",
-        "102.7500.M0.pvc",
-        "105.7500.M0.pvc",
-        "108.7500.M0.pvc",
-        "111.7500.M0.pvc",
-        "114.7500.M0.pvc",
-        "117.7500.M0.pvc",
-        "120.7500.M0.pvc",
-        "123.7500.M0.pvc",
-        "126.7500.M0.pvc",
-        ]
-### -----------------------------------------------------------------------------------------------
-
 
 
 
@@ -120,23 +77,15 @@ kk = 3 # Pe with suction (cf. Solazzi et al. 2021)
 # In GPDC format : "thickness Vp Vs rho\n"
 # Each layer is separated by \n | Only spaces between values | Last layer thickness must be 0)
 # under_layers = "" # Empty string if no under layers
-under_layers = "10 1500 750 2000\n0 4000 2000 2500\n" # One substratum layer
-n_under_layers = under_layers.count('\n') # Number of under layers
-
-# VM_thicknesses = np.diff(np.abs(zs)) # thickness vector [m]
-
-x0 = 1 # first geophone position [m]
-Nx = 192 # number of geophones [m]
-dx = 1 # geophone interval [m]
-xs = np.arange(x0, Nx * dx + 1, dx)
-trig  = 0 # data pretrig (if needed)
+under_layers = "5 2000 1000 2000\n0 4000 2000 2500\n" # One substratum layer
+N_under_layers = under_layers.count('\n') # Number of under layers
 
 
 # Frequency domain and sampling setup to compute dispersion
-df = 1 # number of frequency samples [#]
-min_f = 15 # minimum frequency [Hz]
-max_f = 50
-nf = int((max_f - min_f) / df) + 1 # number of frequency samples [#]
+d_freq = 1 # number of frequency samples [#]
+min_freq = 5 # minimum frequency [Hz]
+max_freq = 100 # maximum frequency [Hz]
+nf = int((max_freq - min_freq) / d_freq) + 1 # number of frequency samples [#]
 
 n_modes = 1 # Number of modes to compute
 s = 'frequency' # Over frequencies mode
@@ -148,16 +97,22 @@ wave = 'R' # Rayleigh (PSV) fundamental mode
 
 
 ### GENERATION PARAMETERS -------------------------------------------------------------------------
-possible_soils = np.array(['clay', 'silt', 'loam', 'sand'])
+possible_soils = np.array(['clay', 'loam', 'silt', 'sand'])
 
-max_layers = 4
+max_N_layers = 4
 
-d_WT = 0.5
-possible_WTs = np.arange(d_WT, 10, d_WT)
+d_WT = 1
+min_WT = 1
+max_WT = 10
+possible_WTs = np.arange(min_WT, max_WT+d_WT, d_WT)
 
+d_thickness = 0.5
+min_thickness = 0.5
 max_depth = 20
 
 possible_Ns = np.array([6, 7, 8, 9, 10])
+
+frac = 0.3
 
 N_models = None
 print(f'\nGeneating {N_models} models')
@@ -173,45 +128,64 @@ THKS = []
 WTs = []
 COORDs = []
 
-for i in tqdm(range(N_models)):
 
+pbar = tqdm(total=N_models)
+i=0
+redo = False
+while i < N_models:
 
     ### PARAMETERS --------------------------------------------------------------------------------
-    N_layers = random.choice(range(1, max_layers+1))
+    if redo == False:
+        N_layers = random.choices(range(1, max_N_layers+1), weights=[0.01, 0.05, 0.25, 0.69], k=1)[0]
 
-    GM_thicknesses = generate_numbers(N_layers, 1, max_depth, 1)
-    if np.sum(GM_thicknesses) != max_depth:
-        raise ValueError('Sum of thicknesses is not equal to max_depth')
+        GM_thicknesses = generate_numbers(N_layers, min_thickness, max_depth, d_thickness)
+        if np.sum(GM_thicknesses) != max_depth:
+            raise ValueError('Sum of thicknesses is not equal to max_depth')
 
-    soil_types = []
-    Ns = []
-    tmp = list(possible_soils)
-    for j in range(N_layers):
-        N = random.choice(possible_Ns)
-        Ns.append(N)
-        if j > 0:
-            tmp.remove(previous_soil_type)
-            soil_type = random.choice(tmp)
-            soil_types.append(soil_type)
-            tmp.append(previous_soil_type)
-            previous_soil_type = soil_type
-        else :
-            soil_type = random.choice(tmp)
-            soil_types.append(soil_type)
-            previous_soil_type = soil_type
+        soil_types = []
+        Ns = []
+        tmp = list(possible_soils)
+        for j in range(N_layers):
+            N = random.choice(possible_Ns)
+            Ns.append(N)
+            if j > 0:
+                tmp.remove(previous_soil_type)
+                soil_type = random.choice(tmp)
+                soil_types.append(soil_type)
+                tmp.append(previous_soil_type)
+                previous_soil_type = soil_type
+            else :
+                soil_type = random.choice(tmp)
+                soil_types.append(soil_type)
+                previous_soil_type = soil_type
 
-    if N_layers < 4:
-        soil_types_to_save = soil_types + [None] * (max_layers - N_layers)
-        GM_thicknesses_to_save = GM_thicknesses + [None] * (max_layers - N_layers)
-        Ns_to_save = Ns + [None] * (max_layers - N_layers)
-    else : 
-        soil_types_to_save = soil_types
-        GM_thicknesses_to_save = GM_thicknesses
-        Ns_to_save = Ns
+        if N_layers < 4:
+            soil_types_to_save = soil_types + [None] * (max_N_layers - N_layers)
+            GM_thicknesses_to_save = GM_thicknesses + [None] * (max_N_layers - N_layers)
+            Ns_to_save = Ns + [None] * (max_N_layers - N_layers)
+        else : 
+            soil_types_to_save = soil_types
+            GM_thicknesses_to_save = GM_thicknesses
+            Ns_to_save = Ns
 
-    WT = random.choice(possible_WTs)
+        WT = random.choice(possible_WTs)
 
-    fracs = [0.3] * N_layers
+        fracs = frac*N_layers
+    
+
+    elif redo == True:
+        dz /= 10
+        top_surface_level = dz
+
+        if dz < 0.01:
+            print(f'{dz = } too small')
+            redo = False
+            dz = 0.1
+            top_surface_level = dz
+            print(f'Back to normal computation with {dz = }\n')
+            continue
+
+        print(f'Redoing computation with {dz = }\n')
     ### -------------------------------------------------------------------------------------------
 
 
@@ -254,13 +228,32 @@ for i in tqdm(range(N_models)):
 
     #### SEISMIC FWD MODELING ---------------------------------------------------------------------
     # Velocity model in string format for GPDC
-    velocity_model_string = writeVelocityModel(VM_thicknesses, VPs, VSs, rhobs, under_layers, n_under_layers)
+    velocity_model_string = writeVelocityModel(VM_thicknesses, VPs, VSs, rhobs, under_layers, N_under_layers)
 
     # Dispersion curves computing with GPDC
     velocity_model_RAMfile = StringIO(velocity_model_string) # Keep velocity model string in the RAM in a file format alike to trick GPDC which expects a file
-    gpdc_command = [f"gpdc -{wave} {n_modes} -n {nf} -min {min_f} -max {max_f} -s {s} -j 16"]
-    gpdc_output_string = run(gpdc_command, input=velocity_model_RAMfile.getvalue(), text=True, shell=True, stdout=PIPE).stdout # Raw output string from GPDC
+    gpdc_command = [f"gpdc -{wave} {n_modes} -n {nf} -min {min_freq} -max {max_freq} -s {s} -j 1"]
+    
+    try :
+        process = run(gpdc_command, input=velocity_model_RAMfile.getvalue(), text=True, shell=True, stdout=PIPE, stderr=PIPE, check=True) # Raw output string from GPDC
+    except CalledProcessError as e:
+        print("\n\nNo dispersion data could be computed with the following parameters:")
+        print(f'{soil_types = }')
+        print(f'{GM_thicknesses = }')
+        print(f'{Ns = }')
+        print(f'{fracs = }')
+        print(f'{WT = }')
+        print(f'{dz = }\n')
+        redo = True
+        continue
 
+    if redo == True:
+        redo = False
+        dz = 0.1
+        top_surface_level = dz
+        print(f'Back to normal computation with {dz = }\n')
+
+    gpdc_output_string = process.stdout # Raw output string from GPDC
     dispersion_data, n_modes = readDispersion(gpdc_output_string) # Reads GPDC output and converts dispersion data to a list of numpy arrays for each mode
                                                                 # Updates number of computed modes (can be lower than what was defined if frequency range too small)
     ### -------------------------------------------------------------------------------------------
@@ -268,17 +261,6 @@ for i in tqdm(range(N_models)):
 
 
     ### APPEND DATA -------------------------------------------------------------------------------
-    # Check if dispersion data is empty
-    if not dispersion_data:
-        print("No dispersion data could be computed with the following parameters:\n")
-        print(f'{soil_types = }\n')
-        print(f'{Ns = }\n')
-        print(f'{fracs = }\n')
-        print(f'{WT = }\n')
-        print('Skipping to next iteration.\n')
-        continue
-    
-
     DCs.append(dispersion_data[0][:,1])
     GMs.append(soil_types_to_save)
     THKS.append(GM_thicknesses_to_save)
@@ -288,30 +270,24 @@ for i in tqdm(range(N_models)):
 
 
 
-    # ### PLOTS -------------------------------------------------------------------------------------
-    # fig, ax = plt.subplots()
+    pbar.update(1)
+    i += 1
 
-    # for file in tqdm(files):
-    #     db = np.loadtxt(f'{PATH_INPUT}/real_data/{file}')
-    #     fs_obs_raw, vs_obs_raw = db[:,0], db[:,1]
-    #     ax.plot(fs_obs_raw, vs_obs_raw, linewidth=0.5, color='k')
-    
-    # # Plot simulated dispersion curve
-    # max_vr = np.max(dispersion_data[0][:,1])
-    # min_vr = np.min(dispersion_data[0][:,1])
-    # for mode in range(n_modes):
-    #     ax.plot(dispersion_data[mode][:,0], dispersion_data[mode][:,1], linewidth=1.5, color='red')
-    #     if np.max(dispersion_data[mode][:,1]) > max_vr:
-    #         max_vr = np.max(dispersion_data[mode][:,1])
-    #     if np.min(dispersion_data[mode][:,1]) < min_vr:
-    #         min_vr = np.min(dispersion_data[mode][:,1])
-    # ax.set_xlim([min_f-5, max_f+5])
-    # ax.set_ylim([100, 1100])
-    # ax.set_xlabel('Frequency [Hz]')
-    # ax.set_ylabel('P-SV phase vel. [m/s]')
+
+
+    ### PLOT DISPERSION DATA -----------------------------------------------------------------------
+    # print(f'{Ns_to_save = }')
+    # print(f'{soil_types_to_save = }')
+    # print(f'{GM_thicknesses_to_save = }')
+    # print(f'{WT = }')
+    # fig, ax = plt.subplots(1, 1, figsize=(16,9))
+    # ax.plot(dispersion_data[0][:,0], dispersion_data[0][:,1], color='r')
     # plt.show()
-    # ### ------------------------------------------------------------------------------------------
+    ### -------------------------------------------------------------------------------------------
 
+
+
+pbar.close()
 ### -----------------------------------------------------------------------------------------------
 
 
@@ -319,9 +295,75 @@ for i in tqdm(range(N_models)):
 
 
 ### SAVE DATA -------------------------------------------------------------------------------------
-np.savetxt(f'{PATH_INPUT}training_data7/DCs.txt', np.array(DCs), fmt='%.3f')
-np.savetxt(f'{PATH_INPUT}training_data7/GMs.txt', np.array(GMs), fmt='%s')
-np.savetxt(f'{PATH_INPUT}training_data7/THKs.txt', np.array(THKS), fmt='%s')
-np.savetxt(f'{PATH_INPUT}training_data7/WTs.txt', np.array(WTs), fmt='%s')
-np.savetxt(f'{PATH_INPUT}training_data7/Ns.txt', np.array(COORDs), fmt='%s')
+DCs = np.array(DCs)
+GMs = np.array(GMs)
+THKS = np.array(THKS)
+WTs = np.array(WTs)
+COORDs = np.array(COORDs)
+
+_, unique_indices = np.unique(DCs, axis=0, return_index=True)
+unique_indices = np.sort(unique_indices)
+
+print(f'\nRemoving duplicates from {len(DCs)} models to {len(unique_indices)} models.\n')
+
+DCs = DCs[unique_indices]
+GMs = GMs[unique_indices]
+THKS = THKS[unique_indices]
+WTs = WTs[unique_indices]
+COORDs = COORDs[unique_indices]
+
+name = f'training_data_{site}'
+np.savetxt(f'{PATH_INPUT}/training_data/{site}/DCs.txt', np.array(DCs), fmt='%.3f')
+np.savetxt(f'{PATH_INPUT}/training_data/{site}/GMs.txt', np.array(GMs), fmt='%s')
+np.savetxt(f'{PATH_INPUT}/training_data/{site}/THKs.txt', np.array(THKS), fmt='%s')
+np.savetxt(f'{PATH_INPUT}/training_data/{site}/WTs.txt', np.array(WTs), fmt='%s')
+np.savetxt(f'{PATH_INPUT}/training_data/{site}/Ns.txt', np.array(COORDs), fmt='%s')
+fs = np.arange(min_freq, max_freq+d_freq, d_freq)
+np.savetxt(f'{PATH_INPUT}/training_data/{site}/fs.txt', np.array(fs), fmt='%s')
+
+
+params = {
+    "name": name,
+
+    "N_samples": len(WTs),
+
+    "soils": possible_soils,
+    "max_N_layers": max_N_layers,
+
+    "d_thickness": d_thickness,
+    "min_thickness": min_thickness,
+    "max_thickness": max_depth,
+    "thicknesses": np.arange(min_thickness, max_depth+d_thickness, d_thickness).tolist(),
+
+    "max_depth": max_depth,
+
+    "d_WT": d_WT,
+    "min_WT": min_WT,
+    "max_WT": max_WT,
+    "WTs": np.arange(min_WT, max_WT+d_WT, d_WT).tolist(),
+
+    "Ns": possible_Ns,
+
+    "frac": frac,
+
+    "d_freq": d_freq,
+    "min_freq": min_freq,
+    "max_freq": max_freq,
+    "freqs": np.arange(min_freq, max_freq+d_freq, d_freq).tolist(),
+    "N_freqs" : DCs.shape[1],
+
+    "min_vel" : np.min(DCs),
+    "max_vel" : np.max(DCs),
+
+    "n_modes": n_modes,
+
+    "under_layers": under_layers,
+    'N_under_layers': N_under_layers,
+
+    "dz": dz,
+    "top_surface_level": dz
+}
+
+with open(f'{PATH_INPUT}/training_data/{site}/params.json', 'w') as file:
+    json.dump(params, file, indent=2)
 ### -----------------------------------------------------------------------------------------------

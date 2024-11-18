@@ -1,6 +1,6 @@
 """
 Author : José CUNHA TEIXEIRA
-License : SNCF Réseau, UMR 7619 METIS
+License : SNCF Réseau, UMR 7619 METIS, Sorbonne Université
 Date : April 30, 2024
 """
 
@@ -13,12 +13,11 @@ import sys
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from matplotlib.colors import ListedColormap
+from scipy.signal import savgol_filter
 from io import StringIO
 from pickle import load
-from subprocess import run, PIPE
-from scipy.signal import savgol_filter
-from scipy.ndimage import generic_filter
+from subprocess import run, PIPE, CalledProcessError
+from tqdm import tqdm
 
 from misc import resamp
 from folders import PATH_INPUT, PATH_MODELS, PATH_OUTPUT
@@ -41,7 +40,7 @@ from tensorflow.config import set_visible_devices
 from tensorflow.config.threading import set_intra_op_parallelism_threads, set_inter_op_parallelism_threads
 
 set_visible_devices([], 'GPU')
-N_jobs = 16
+N_jobs = 1
 set_intra_op_parallelism_threads(N_jobs)
 set_inter_op_parallelism_threads(N_jobs)
 ### -----------------------------------------------------------------------------------------------
@@ -50,569 +49,524 @@ set_inter_op_parallelism_threads(N_jobs)
 
 
 
+### PARAMS ----------------------------------------------------------------------------------------
+model_id = '[202407170928]'
+site = 'Grand_Est'
+dx = 3 # Distance between the dispersion curves [m]
+### -----------------------------------------------------------------------------------------------
+
+
+
+
+
 ### LOAD MODEL ------------------------------------------------------------------------------------
-# MODEL_NAME = '[]'
-MODEL_NAME = sys.argv[1]
-
-path_model = f'{PATH_MODELS}/{MODEL_NAME}/{MODEL_NAME}_model'
+path_model = f'{PATH_MODELS}/{model_id}/{model_id}_model'
 print(f'\nLoading model : {path_model}')
-
 with open(f'{path_model}.pkl', 'rb') as f:
-    model = load(f)
+    transformer = load(f)
 ### -----------------------------------------------------------------------------------------------
 
 
 
 
 
-### SEQUENCES' FORMATS ----------------------------------------------------------------------------
-input_sequence_format = model.input_sequence_format
-min_freq = input_sequence_format.vocab.min
-max_freq = input_sequence_format.vocab.max
-
-output_sequence_format = model.output_sequence_format
-word_to_index = output_sequence_format.vocab.word_to_index
-index_to_word = output_sequence_format.vocab.index_to_word
-len_output_seq = output_sequence_format.length
+### PROFILES TO INVERT ----------------------------------------------------------------------------
+dates = os.listdir(f'{PATH_INPUT}/real_data/{site}/')
+dates = sorted(dates)
+profiles = []
+for date in dates:
+    year, month, day = date.split('-')
+    if year in ['2022', '2023'] and month in ['07']: ### <- Change this line to select the desired dates
+        list_profiles = os.listdir(f'{PATH_INPUT}/real_data/{site}/{date}/')
+        list_profiles = sorted(list_profiles)
+        profiles += [f'{site}/{date}/{profile}' for profile in list_profiles]
+dxs = [dx]*len(profiles)
 ### -----------------------------------------------------------------------------------------------
 
 
 
 
 
-### FIELD DISPERSION DATA FILES -------------------------------------------------------------------
-# PROFILE = 'PJ'
-# dx = 1.5
-PROFILE = sys.argv[2]
-dx = float(sys.argv[3])
 
+### FORMATS ---------------------------------------------------------------------------------------
+params = transformer.params
 
-files = os.listdir(f'{PATH_INPUT}/real_data/{PROFILE}/')
-files = sorted(files, key=lambda x: int(x.split('.')[0]))
+if params['model_params']['trained'] == False:
+  print(f'\033[1;33mERROR: Model {model_id} was not trained yet.\033[0m')
+  sys.exit
 
-xmid_min = 0
-xmid_max = xmid_min + dx*(len(files)-1)
-xmids = np.arange(xmid_min, xmid_max+dx, dx)
+data_params = params['data_params']
 
-if not os.path.exists(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/'):
-  os.makedirs(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/')
+max_N_layers = params['data_params']['max_N_layers']
+
+min_freq = params['input_seq_format']['min_freq']
+max_freq = params['input_seq_format']['max_freq']
+min_vel = params['input_seq_format']['min_vel']
+max_vel = params['input_seq_format']['max_vel']
+d_freq = params['input_seq_format']['d_freq']
+N_freqs = params['input_seq_format']['N_freqs']
+print(f'\n{min_freq = }, {max_freq = }, {min_vel = }, {max_vel = }')
+
+word_to_index = params['output_seq_format']['word_to_index']
+index_to_word = params['output_seq_format']['index_to_word']
+len_output_seq = params['output_seq_format']['length']
+
+# Under layers
+under_layers = data_params['under_layers']
+N_under_layers = data_params['N_under_layers']
+
+# Geometry and discretisation of the medium
+dz_origin = data_params['dz'] # Depth sample interval [m]
+dz = dz_origin
+top_surface_level_origin = data_params['top_surface_level'] # Altitude of the soil surface[m]
+top_surface_level = top_surface_level_origin
+
+n_modes = data_params['n_modes'] # Number of modes to compute
 ### -----------------------------------------------------------------------------------------------
 
 
 
 
 
-### INVERSION -------------------------------------------------------------------------------------
-GM_db = []
-thicks_db = []
-Vs_db = []
-Vp_db = []
-rho_db = []
-Sw_db = []
-disp_db = []
-WT_db = []
-depth_db = []
-rms_db = []
-Ns_db = []
 
-num_plots = len(xmids)
-subplot_width = int(np.ceil(np.sqrt(num_plots)))
-subplot_height = int(np.ceil(num_plots / subplot_width))
+### ROCK PHYSICS CONSTANTS ------------------------------------------------------------------------
+rhow = 1000.0 # Water density [Kg/m3]
+rhoa = 1.0 # Air density [Kg/m3]
+kw = 2.3e9 # Water bulk modulus [Pa]
+ka = 1.01e5 # Air bulk modulus [Pa]
+g = 9.82 # Gravity acceleration [m/s2]
 
-fig, ax = plt.subplots(subplot_height, subplot_width, figsize=(16, 16), dpi=300)
-plt_line = 0
-plt_col = 0
+# Grains/agregate mechanical properties
+mu_clay = 6.8 # Shear moduli [GPa]
+mu_silt = 45.0
+mu_sand = 45.0
+k_clay = 25.0 # Bulk moduli [GPa]
+k_silt = 37.0
+k_sand = 37.0
+rho_clay = 2580.0 # Density [kg/m3]
+rho_silt = 2600.0
+rho_sand = 2600.0
 
-for file in files:
-    print('\n\n----------------------------------------------\n\n')
-    print('\033[1;32mXmid: ' + file + '\033[0m')
-
-    db = np.loadtxt(f'{PATH_INPUT}/real_data/{PROFILE}/{file}')
-    fs_obs_raw, vs_obs_raw = db[:,0], db[:,1]
-
-
-    # if (len(vs_obs_raw)/2) % 2 == 0:
-    #     wl = len(vs_obs_raw)/2 + 1
-    # else:
-    #     wl = len(vs_obs_raw)/2
-    # vs_obs_raw = savgol_filter(vs_obs_raw, window_length=wl, polyorder=3, mode="nearest")
-
-
-    axis_resamp = np.arange(min_freq, max_freq+1, 1)
-    fs_obs, vs_obs = resamp(fs_obs_raw, vs_obs_raw, axis_resamp=axis_resamp, type='frequency')
-
-    vs_obs_comp = np.copy(vs_obs)
-
-    vs_obs = (vs_obs-150) / (400-150)
-    vs_obs = vs_obs.reshape(1, vs_obs.shape[0], 1)
-    ### -----------------------------------------------------------------------------------------------
+# Three possible RP models:
+kk = 3 # Pe with suction (cf. Solazzi et al. 2021)
+### -----------------------------------------------------------------------------------------------
 
 
 
 
 
-    ### INFERENCE -------------------------------------------------------------------------------------
-    input_seq = vs_obs
+### SEISMIC CONSTANTS -----------------------------------------------------------------------------
+s = 'frequency' # Over frequencies mode
+wave = 'R' # Rayleigh (PSV) fundamental mode
+### -----------------------------------------------------------------------------------------------
 
-    decoded_seq = model.decode_seq_restrictive(input_seq)
 
-    decoded_GM = []
 
-    print(f"\nDecoded Sequence: {decoded_seq}\n")
-    for i in range(0, len(decoded_seq)):
-        decoded_GM.append(index_to_word[decoded_seq[i]])
-        print(f'{i+1} : {index_to_word[decoded_seq[i]]}')
 
-    soil_types = decoded_GM[3::6]
-    soil_types = [soil for soil in soil_types if soil not in ['[PAD]', '[END]']]
 
-    GM_thicknesses = decoded_GM[5::6]
-    GM_thicknesses = [float(thickness) for thickness in GM_thicknesses if thickness not in ['[PAD]', '[END]']]
+for profile, dx in tqdm(zip(profiles, dxs), total=len(profiles), desc='Profiles', colour='green'):
+    ### FIELD DISPERSION DATA FILES ---------------------------------------------------------------
+    PROFILE_NAME = profile.split('/')[-1]
 
-    Ns = decoded_GM[7::6]
-    Ns = [float(N) for N in Ns if N not in ['[PAD]', '[END]']]
+    files = os.listdir(f'{PATH_INPUT}/real_data/{profile}/')
+    files = sorted(files, key=lambda x: float(x.split('_')[0]))
+
+    xmids = [float(x.split('_')[0]) for x in files]
+    xmids = sorted(xmids)
     
-    WT = float(decoded_GM[1])
-
-    fracs = [0.3] * len(soil_types)
-
-    depth = np.sum(GM_thicknesses)
-
-    print(f'\n{soil_types = }')
-    print(f'{GM_thicknesses = }', depth)
-    print(f'{Ns = }')
-    print(f'{fracs = }')
-    print(f'{WT = }')
-    print(f'{depth = }')
-    if depth != output_sequence_format.vocab.max_depth:
-        print(f'\033[1;33mWARNING: Sum of layer thicknesses {depth} is not equal to the expected total depth {output_sequence_format.vocab.max_depth}.\033[0m')
-
-
-    for soil in soil_types:
-        if soil not in output_sequence_format.vocab.words:
-            print('Error: Soil type not in soil vocabulary.')
-            sys.exit()
-
-    thicks_db.append(GM_thicknesses)
-    GM_db.append(soil_types)
-    WT_db.append(WT)
-    depth_db.append(depth)
-    Ns_db.append(Ns)
-    ### ------------------------------------------------------------------------------------------------
+    if not os.path.exists(f'{PATH_OUTPUT}/{model_id}/{profile}/'):
+        os.makedirs(f'{PATH_OUTPUT}/{model_id}/{profile}/')
+    ### -------------------------------------------------------------------------------------------
 
 
 
 
 
-    ### ROCK PHYSICS CONSTANTS ------------------------------------------------------------------------
-    rhow = 1000.0 # Water density [Kg/m3]
-    rhoa = 1.0 # Air density [Kg/m3]
-    kw = 2.3e9 # Water bulk modulus [Pa]
-    ka = 1.01e5 # Air bulk modulus [Pa]
-    g = 9.82 # Gravity acceleration [m/s2]
+    ### INVERSION ---------------------------------------------------------------------------------
+    z_zx = []
 
-    # Grains/agregate mechanical properties
-    mu_clay = 6.8 # Shear moduli [GPa]
-    mu_silt = 45.0
-    mu_sand = 45.0
-    k_clay = 25.0 # Bulk moduli [GPa]
-    k_silt = 37.0
-    k_sand = 37.0
-    rho_clay = 2580.0 # Density [kg/m3]
-    rho_silt = 2600.0
-    rho_sand = 2600.0
+    soil_zx = []
+    thick_zx = []
+    N_zx = []
+    WT_x = []
 
-    # Geometry and discretisation of the medium
-    dz = 0.1 # Depth sample interval [m]
-    top_surface_level = dz # Altitude of the soil surface[m]
-    zs = -np.arange(top_surface_level, depth + dz, dz) # Depth positions (negative downward) [m]
+    h_zx = []
+    Sw_zx = []
+    Swe_zx = []
 
-    NbCells = len(zs) - 1 # Number of exploration points in depth [#]
+    mus_zx = []
+    Ks_zx = []
+    rhos_zx = []
+    nus_zx = []
 
-    # Three possible RP models:
-    kk = 3 # Pe with suction (cf. Solazzi et al. 2021)
-    ### -----------------------------------------------------------------------------------------------
+    Kf_zx = []
+    rhof_zx = []
+    rhob_zx = []
 
+    Km_zx = []
+    mum_zx = []
 
-
-
-
-    ### SEISMIC CONSTANTS -----------------------------------------------------------------------------
-    # Layers to put under the studied soil column on the velocity model
-    # In GPDC format : "thickness Vp Vs rho\n"
-    # Each layer is separated by \n | Only spaces between values | Last layer thickness must be 0)
-    # under_layers = "" # Empty string if no under layers
-    under_layers = "10 1500 750 2000\n0 4000 2000 2500\n" # One substratum layer
-    n_under_layers = under_layers.count('\n') # Number of under layers
-
-    VM_thicknesses = np.diff(np.abs(zs)) # thickness vector [m]
-
-    x0 = 1 # first geophone position [m]
-    Nx = 192 # number of geophones [m]
-    dx = 1 # geophone interval [m]
-    xs = np.arange(x0, Nx * dx + 1, dx)
-    trig  = 0 # data pretrig (if needed)
-
-
-    # Frequency domain and sampling setup to compute dispersion
-    df = 1 # number of frequency samples [#]
-    min_f = min_freq # minimum frequency [Hz]
-    max_f = max_freq
-    nf = int((max_f - min_f) / df) + 1 # number of frequency samples [#]
-
-    n_modes = 1 # Number of modes to compute
-    s = 'frequency' # Over frequencies mode
-    wave = 'R' # Rayleigh (PSV) fundamental mode
-    ### -----------------------------------------------------------------------------------------------
-
-
-
-
-
-    #### ROCK PHYSICS ---------------------------------------------------------------------------------
-    # Saturation profile with depth
-    hs, Sws, Swes = vanGen(zs, WT, soil_types, GM_thicknesses)
-    Sw_db.append(Sws)
-
-
-    # Effective Grain Properties (constant with depth)
-    mus, ks, rhos, nus = hillsAverage(mu_clay, mu_silt, mu_sand, rho_clay,
-                                        rho_silt, rho_sand, k_clay, k_silt,
-                                        k_sand, soil_types)
-    rho_db.append(rhos)
-
-    # Effective Fluid Properties
-    kfs, rhofs, rhobs = effFluid(Sws, kw, ka, rhow,
-                                    rhoa, rhos, soil_types, GM_thicknesses, dz)
-
-    # Hertz Mindlin Frame Properties
-    KHMs, muHMs = hertzMindlin(Swes, zs, hs, rhobs,
-                                g, rhoa, rhow, Ns,
-                                mus, nus, fracs, kk,
-                                soil_types, GM_thicknesses)
-
-    # Saturated Properties
-    VPs, VSs = biotGassmann(KHMs, muHMs, ks, kfs,
-                            rhobs, soil_types, GM_thicknesses, dz)
-
-    Vp_db.append(VPs)
-    Vs_db.append(VSs)
-    ### -----------------------------------------------------------------------------------------------
-
-
-
-    #### SEISMIC FWD MODELING -------------------------------------------------------------------------
-    # Velocity model in string format for GPDC
-    velocity_model_string = writeVelocityModel(VM_thicknesses, VPs, VSs, rhobs, under_layers, n_under_layers)
-
-    # Dispersion curves computing with GPDC
-    velocity_model_RAMfile = StringIO(velocity_model_string) # Keep velocity model string in the RAM in a file format alike to trick GPDC which expects a file
-    gpdc_command = [f"gpdc -{wave} {n_modes} -n {nf} -min {min_f} -max {max_f} -s {s} -j 16"]
-    gpdc_output_string = run(gpdc_command, input=velocity_model_RAMfile.getvalue(), text=True, shell=True, stdout=PIPE).stdout # Raw output string from GPDC
-
-    dispersion_data, n_modes = readDispersion(gpdc_output_string) # Reads GPDC output and converts dispersion data to a list of numpy arrays for each mode
-                                                                # Updates number of computed modes (can be lower than what was defined if frequency range too small)
+    Vs_zx = []
+    Vp_zx = []
+    disp_db = []
     
+    rms_x = []
 
-    disp_db.append(dispersion_data)
 
+    for file in tqdm(files, total=len(files), leave=False, desc='Xmids'):
+        computed  = False
+        flag = False
+        if dz != dz_origin:
+            dz = dz_origin
+            top_surface_level = top_surface_level_origin
+            print(f'INFO : dz reset at {dz_origin}\n')
+            
+            
+        while computed == False:
+            ### OBSERVED DATA -------------------------------------------------------------------------
+            db = np.loadtxt(f'{PATH_INPUT}/real_data/{profile}/{file}')
+            fs_obs_raw, Vr_obs_raw = db[:,0], db[:,1]
 
-    rms = np.sqrt(np.mean((vs_obs_comp - dispersion_data[0][:,1])**2))
-    rms_db.append(rms)
+            if (len(Vr_obs_raw)/4) % 2 == 0:
+                wl = len(Vr_obs_raw)/4 + 1
+            else:
+                wl = len(Vr_obs_raw)/4
+            Vr_obs_raw = savgol_filter(Vr_obs_raw, window_length=wl, polyorder=2, mode="nearest")
 
-    
-    ax[plt_line, plt_col].plot(fs_obs_raw, vs_obs_raw, color='black')
-    ax[plt_line, plt_col].plot(dispersion_data[0][:,0], dispersion_data[0][:,1], color='red', linestyle='--')
-    ax[plt_line, plt_col].set_ylim([100, 500])
-    ax[plt_line, plt_col].set_xlim([min_freq, max_freq])
-    ax[plt_line, plt_col].set_title(f'{file} | RMS : {rms:.2f}', fontsize=6)
+            axis_resamp = np.arange(min_freq, max_freq+1, 1)
+            fs_obs, Vr_obs = resamp(fs_obs_raw, Vr_obs_raw, axis_resamp=axis_resamp, type='frequency')
 
+            Vr_obs_comp = np.copy(Vr_obs)
 
-    if plt_line == subplot_height - 1:
-        if plt_col == 0:
-            ax[plt_line, plt_col].tick_params(top=False, labeltop=False, bottom=True, labelbottom=True, left=True, labelleft=True, right=False, labelright=False)
-            ax[plt_line, plt_col].set_xlabel('Frequency\n[Hz]')
-            ax[plt_line, plt_col].set_ylabel("${V_R}$ [m/s]")
-        else :
-            ax[plt_line, plt_col].tick_params(top=False, labeltop=False, bottom=True, labelbottom=True, left=False, labelleft=False, right=False, labelright=False)
-            ax[plt_line, plt_col].set_xlabel('Frequency\n[Hz]')
-            ax[plt_line, plt_col].set_ylabel('')
-    else:
-        if plt_col == 0:
-            ax[plt_line, plt_col].tick_params(top=False, labeltop=False, bottom=False, labelbottom=False, left=True, labelleft=True, right=False, labelright=False)
-            ax[plt_line, plt_col].set_xlabel('')
-            ax[plt_line, plt_col].set_ylabel("${V_R}$ [m/s]")
-        else :
-            ax[plt_line, plt_col].tick_params(top=False, labeltop=False, bottom=False, labelbottom=False, left=False, labelleft=False, right=False, labelright=False)
-            ax[plt_line, plt_col].set_xlabel('')
-            ax[plt_line, plt_col].set_ylabel('')
+            Vr_obs = (Vr_obs-min_vel) / (max_vel-min_vel)
 
+            Vr_obs = Vr_obs.reshape(1, Vr_obs.shape[0], 1)
+            ### ---------------------------------------------------------------------------------------
 
-    if plt_col == subplot_width - 1:
-        plt_line += 1
-        plt_col = 0
-    else :
-        plt_col +=1
-    ### -----------------------------------------------------------------------------------------------
 
 
 
 
+            ### INFERENCE -----------------------------------------------------------------------------
+            input_seq = Vr_obs
 
-### -----------------------------------------------------------------------------------------------
-while plt_col < subplot_width:
-    ax[plt_line, plt_col].axis('off')
-    plt_col += 1
-fig.savefig(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_disp-comp.png', bbox_inches='tight')
-### -----------------------------------------------------------------------------------------------
+            decoded_seq = transformer.decode_seq_restrictive(input_seq)
 
+            decoded_GM = []
 
+            # print(f"\nDecoded Sequence: {decoded_seq}\n")
+            for i in range(0, len(decoded_seq)):
+                decoded_GM.append(index_to_word[decoded_seq[i]])
+                # print(f'{i+1} : {index_to_word[decoded_seq[i]]}')
 
+            soil_types = decoded_GM[3::6]
+            soil_types = [soil for soil in soil_types if soil not in ['[PAD]', '[END]']]
 
+            GM_thicknesses = decoded_GM[5::6]
+            GM_thicknesses = [float(thickness) for thickness in GM_thicknesses if thickness not in ['[PAD]', '[END]']]
 
-### -----------------------------------------------------------------------------------------------
-np.savetxt(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_zs.txt', zs, fmt='%.2f')
-np.savetxt(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_xs.txt', xmids.reshape(1, len(xmids)), fmt='%.2f')
-### -----------------------------------------------------------------------------------------------
+            Ns = decoded_GM[7::6]
+            Ns = [float(N) for N in Ns if N not in ['[PAD]', '[END]']]
+            
+            WT = float(decoded_GM[1])
 
+            fracs = [0.3] * len(soil_types)
 
+            depth = np.sum(GM_thicknesses)
 
+            # print(f'\n{soil_types = }')
+            # print(f'{GM_thicknesses = }', depth)
+            # print(f'{Ns = }')
+            # print(f'{fracs = }')
+            # print(f'{WT = }')
+            # print(f'{depth = }')
+            # print(f'{dz = }')
+            # if depth != params['data_params']['max_depth']:
+            #     print(f"\033[1;33mWARNING: Sum of layer thicknesses {depth} is not equal to the expected total depth {params['data_params']['max_depth']}.\033[0m")
 
-
-### -----------------------------------------------------------------------------------------------
-# Smooth water table profile
-WT_db = np.array(WT_db)
-if (len(WT_db)/2) % 2 == 0:
-    wl = len(WT_db)/2 + 1
-else:
-    wl = len(WT_db)/2
-WT_db_smooth = savgol_filter(WT_db, window_length=wl, polyorder=3, mode="nearest")
-np.savetxt(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_WT.txt', WT_db.reshape(1,len(WT_db)) , fmt='%.2f')
-### -----------------------------------------------------------------------------------------------
 
+            for soil in soil_types:
+                if soil not in params['data_params']['soils']:
+                    print('Error: Soil type not in soil vocabulary.')
+                    sys.exit()
+            ### ---------------------------------------------------------------------------------------
 
 
 
 
-### Vs --------------------------------------------------------------------------------------------
-Vs_db = pd.DataFrame(Vs_db).to_numpy().T
-fig, ax = plt.subplots(figsize=(19*cm, 6*cm), dpi=300)
-extent = [xmid_min, xmid_max, -max(depth_db), -0.1]
-im1 = ax.imshow(Vs_db, aspect='auto', cmap='terrain', extent=extent, vmin=200, vmax=700)
-ax.plot(xmids, -WT_db, linestyle='--', color='k')
-ax.plot(xmids, -WT_db_smooth, color='k')
-ax.tick_params(which='both', labelbottom=False, labeltop=True, labelleft=True, labelright=False, bottom=True, top=True, left=True, right=True)
-ax.set_xlabel('Position [m]')
-ax.xaxis.set_label_position('top')
-ax.set_ylabel('Depth [m]')
-ax.set_ylim([-output_sequence_format.vocab.max_depth,0])
-cb = fig.colorbar(im1, ax=ax, label="${V_S}$ [m/s]")
-cb.minorticks_on()
-ax.minorticks_on()
-fig.savefig(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_Vs.png', bbox_inches='tight')
-np.savetxt(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_Vs.txt', Vs_db, fmt='%.2f')
-
-
-def mode_filter(values):
-    mode = np.nanmean(values)
-    return mode
-
-smoothed_map = generic_filter(Vs_db, mode_filter, size=(1,3))
-
-fig, ax = plt.subplots(figsize=(19*cm, 6*cm), dpi=300)
-extent = [xmid_min, xmid_max, -max(depth_db), -0.1]
-im1 = ax.imshow(smoothed_map, aspect='auto', cmap='terrain', extent=extent, vmin=200, vmax=700)
-ax.plot(xmids, -WT_db, linestyle='--', color='k')
-ax.plot(xmids, -WT_db_smooth, color='k')
-ax.set_xlabel('Position [m]')
-ax.xaxis.set_label_position('top')
-ax.set_ylabel('Depth [m]')
-ax.tick_params(which='both', labelbottom=False, labeltop=True, labelleft=True, labelright=False, bottom=True, top=True, left=True, right=True)
-ax.set_ylim([-output_sequence_format.vocab.max_depth,0])
-cb = fig.colorbar(im1, ax=ax, label="${V_S}$ [m/s]")
-cb.minorticks_on()
-ax.minorticks_on()
-fig.savefig(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_Vs-smooth.png', bbox_inches='tight')
-### -----------------------------------------------------------------------------------------------
-
-
-
-
-
-### Vp --------------------------------------------------------------------------------------------
-Vp_db = pd.DataFrame(Vp_db).to_numpy().T
-fig, ax = plt.subplots(figsize=(19*cm, 6*cm), dpi=300)
-extent = [xmid_min, xmid_max, -max(depth_db), -0.1]
-im2 = ax.imshow(Vp_db, aspect='auto', cmap='terrain', extent=extent)
-ax.plot(xmids, -WT_db, linestyle='--', color='k')
-ax.plot(xmids, -WT_db_smooth, color='k')
-ax.set_xlabel('Position [m]')
-ax.xaxis.set_label_position('top')
-ax.set_ylabel('Depth [m]')
-ax.set_ylim([-output_sequence_format.vocab.max_depth,0])
-ax.tick_params(which='both', labelbottom=False, labeltop=True, labelleft=True, labelright=False, bottom=True, top=True, left=True, right=True)
-cb = fig.colorbar(im2, ax=ax, label="${V_P}$ [m/s]")
-cb.minorticks_on()
-ax.minorticks_on()
-fig.savefig(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_Vp.png', bbox_inches='tight')
-np.savetxt(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_Vp.txt', Vp_db, fmt='%.2f')
-
-
-def mode_filter(values):
-    mode = np.nanmean(values)
-    return mode
-
-smoothed_map = generic_filter(Vp_db, mode_filter, size=(1,3))
-
-fig, ax = plt.subplots(figsize=(19*cm, 6*cm), dpi=300)
-extent = [xmid_min, xmid_max, -max(depth_db), -0.1]
-im2 = ax.imshow(smoothed_map, aspect='auto', cmap='terrain', extent=extent)
-ax.plot(xmids, -WT_db, linestyle='--', color='k')
-ax.plot(xmids, -WT_db_smooth, color='k')
-ax.tick_params(which='both', labelbottom=False, labeltop=True, labelleft=True, labelright=False, bottom=True, top=True, left=True, right=True)
-ax.set_xlabel('Position [m]')
-ax.xaxis.set_label_position('top')
-ax.set_ylabel('Depth [m]')
-ax.set_ylim([-output_sequence_format.vocab.max_depth,0])
-cb = fig.colorbar(im2, ax=ax, label="${V_P}$ [m/s]")
-cb.minorticks_on()
-ax.minorticks_on()
-fig.savefig(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_Vp-smooth.png', bbox_inches='tight')
-### -----------------------------------------------------------------------------------------------
-
-
-
-
-
-### SOILS -----------------------------------------------------------------------------------------
-GM_int_db = []
-soil_to_int = {'None':0, 'clay':1, 'silt':2, 'loam':3, 'sand':4}
-int_to_soil = {0:'None', 1:'clay', 2:'silt', 3:'loam', 4:'sand'}
-for i, (soils, thicks) in enumerate(zip(GM_db, thicks_db)):
-    log = []
-    for soil, thick in zip(soils, thicks):
-        log.extend([soil_to_int[soil]]*int(thick))
-    GM_int_db.append(log)
-GM_int_db = pd.DataFrame(GM_int_db)
-GM_int_db = GM_int_db.fillna(0)
-GM_int_db = GM_int_db.to_numpy().T
-
-cmap = ListedColormap(["white", "mediumblue", "dodgerblue", "limegreen", "yellow"])
-
-
-fig, ax = plt.subplots(figsize=(19*cm, 6*cm), dpi=300)
-extent = [xmid_min, xmid_max, -max(depth_db), 0]
-im3 = ax.imshow(GM_int_db, aspect='auto', cmap=cmap, extent=extent, vmin=0, vmax=4, alpha=0.5)
-ax.plot(xmids, -WT_db, linestyle='--', color='k')
-ax.plot(xmids, -WT_db_smooth, color='k')
-ax.tick_params(which='both', labelbottom=False, labeltop=True, labelleft=True, labelright=False, bottom=True, top=True, left=True, right=True)
-ax.set_xlabel('Position [m]')
-ax.xaxis.set_label_position('top')
-ax.set_ylabel('Depth [m]')
-ax.set_ylim([-output_sequence_format.vocab.max_depth,0])
-colorbar = fig.colorbar(im3, ax=ax, label='Soil type')
-colorbar.set_ticks(list(soil_to_int.values()))
-colorbar.set_ticklabels(list(soil_to_int.keys()))
-ax.minorticks_on()
-fig.savefig(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_GM.png', bbox_inches='tight')
-
-# Save GM_int_db as text file
-GM_int_db_toSave = np.full(GM_int_db.shape, 'NaN', dtype=object)
-for i in range(GM_int_db_toSave.shape[0]):
-    for j in range(GM_int_db_toSave.shape[1]):
-        GM_int_db_toSave[i,j] = int_to_soil[GM_int_db[i,j]]
-np.savetxt(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_GM.txt', GM_int_db_toSave, fmt='%s')
-
-
-def mode_filter(values):
-    counts = np.bincount(values.astype(int))
-    if np.all(counts <= 1):
-        return int(values[(len(values)//2)])
-    else:
-        return counts.argmax()
-
-smoothed_map = generic_filter(GM_int_db, mode_filter, size=(1,3))
-smoothed_map = generic_filter(smoothed_map, mode_filter, size=(1,3))
-
-fig, ax = plt.subplots(figsize=(19*cm, 6*cm), dpi=300)
-extent = [xmid_min, xmid_max, -max(depth_db), 0]
-im3 = ax.imshow(smoothed_map, aspect='auto', cmap=cmap, extent=extent, vmin=0, vmax=4, alpha=0.5)
-ax.plot(xmids, -WT_db, linestyle='--', color='k')
-ax.plot(xmids, -WT_db_smooth, color='k')
-ax.tick_params(which='both', labelbottom=False, labeltop=True, labelleft=True, labelright=False, bottom=True, top=True, left=True, right=True)
-ax.set_xlabel('Position [m]')
-ax.xaxis.set_label_position('top')
-ax.set_ylabel('Depth [m]')
-ax.set_ylim([-output_sequence_format.vocab.max_depth,0])
-colorbar = fig.colorbar(im3, ax=ax, label='Soil type')
-colorbar.set_ticks(list(soil_to_int.values()))
-colorbar.set_ticklabels(list(soil_to_int.keys()))
-ax.minorticks_on()
-fig.savefig(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_GM-smooth.png', bbox_inches='tight')
-### -----------------------------------------------------------------------------------------------
-
-
-
-
-
-### N ---------------------------------------------------------------------------------------------
-Ns_int_db = []
-for i, (Ns, thicks) in enumerate(zip(Ns_db, thicks_db)):
-    log = []
-    for N, thick in zip(Ns, thicks):
-        log.extend([N]*int(thick))
-    Ns_int_db.append(log)
-Ns_int_db = pd.DataFrame(Ns_int_db)
-Ns_int_db = Ns_int_db.to_numpy().T
-
-fig, ax = plt.subplots(figsize=(19*cm, 6*cm), dpi=300)
-extent = [xmid_min, xmid_max, -max(depth_db), -0.1]
-cmap = ListedColormap(["tab:blue", "tab:cyan", "tab:green", "tab:orange", "tab:red"])
-im4 = ax.imshow(Ns_int_db, aspect='auto', cmap=cmap, extent=extent, vmin=6, vmax=10)
-ax.plot(xmids, -WT_db, linestyle='--', color='k')
-ax.plot(xmids, -WT_db_smooth, color='k')
-ax.tick_params(which='both', labelbottom=False, labeltop=True, labelleft=True, labelright=False, bottom=True, top=True, left=True, right=True)
-ax.set_xlabel('Position [m]')
-ax.xaxis.set_label_position('top')
-ax.set_ylabel('Depth [m]')
-ax.set_ylim([-output_sequence_format.vocab.max_depth,0])
-cb = fig.colorbar(im4, ax=ax, label='N')
-ax.minorticks_on()
-fig.savefig(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_N.png', bbox_inches='tight')
-np.savetxt(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_N.txt', Ns_int_db, fmt='%s')
-### -----------------------------------------------------------------------------------------------
-
-
-
-
-
-### DISP ------------------------------------------------------------------------------------------
-cmap = plt.get_cmap('nipy_spectral')
-colors = [cmap(i / (len(disp_db) - 1)) for i in range(len(disp_db))]
-fig, ax = plt.subplots(figsize=(19*cm, 6*cm), dpi=300)
-for i, disp in enumerate(disp_db):
-    ax.plot(disp[0][:,0], disp[0][:,1], color=colors[i])
-ax.set_ylim([100, 500])
-ax.set_xlim([min_freq, max_freq])
-ax.set_xlabel('Frequency [Hz]')
-ax.set_ylabel("${V_R}$ [m/s]")
-ax.minorticks_on()
-fig.savefig(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_disp.png', bbox_inches='tight')
-
-disp_toSave = []
-for disp in disp_db:
-    disp_toSave.append(disp[0][:,1])
-disp_toSave = np.array(disp_toSave).T
-np.savetxt(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_disp.txt', disp_toSave, fmt='%.2f')
-np.savetxt(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_freqs.txt', disp_db[0][0][:,0], fmt='%.2f')
-### -----------------------------------------------------------------------------------------------
-
-
-
-
-
-### RMS -------------------------------------------------------------------------------------------
-with open(f'{PATH_OUTPUT}/{MODEL_NAME}/{PROFILE}/{MODEL_NAME}_{PROFILE}_disp-rms.txt', 'w') as f:
-    f.write(f'Model ID: {model.id}\n\n')
-    f.write(f'Mean RMS: {np.mean(rms_db)} m/s')
-### -----------------------------------------------------------------------------------------------
+
+            ### ROCK PHYSICS CONSTANTS ----------------------------------------------------------------
+            zs = -np.arange(top_surface_level, depth + dz, dz) # Depth positions (negative downward) [m]
+
+            NbCells = len(zs) - 1 # Number of exploration points in depth [#]
+            ### ---------------------------------------------------------------------------------------
+
+
+
+
+
+            ### SEISMIC CONSTANTS ---------------------------------------------------------------------
+            VM_thicknesses = np.diff(np.abs(zs)) # thickness vector [m]
+            ### ---------------------------------------------------------------------------------------
+
+
+
+
+
+            #### ROCK PHYSICS -------------------------------------------------------------------------
+            # Saturation profile with depth
+            h_z, Sw_z, Swe_z = vanGen(zs, WT, soil_types, GM_thicknesses)
+
+
+            # Effective Grain Properties (constant with depth)
+            mus_z, Ks_z, rhos_z, nus_z = hillsAverage(mu_clay, mu_silt, mu_sand, rho_clay,
+                                                rho_silt, rho_sand, k_clay, k_silt,
+                                                k_sand, soil_types)
+       
+
+            # Effective Fluid Properties
+            Kf_z, rhof_z, rhob_z = effFluid(Sw_z, kw, ka, rhow,
+                                            rhoa, rhos_z, soil_types, GM_thicknesses, dz)
+
+
+            # Hertz Mindlin Frame Properties
+            Km_z, mum_z = hertzMindlin(Swe_z, zs, h_z, rhob_z,
+                                        g, rhoa, rhow, Ns,
+                                        mus_z, nus_z, fracs, kk,
+                                        soil_types, GM_thicknesses)
+
+
+            # Saturated Properties
+            Vp_z, Vs_z = biotGassmann(Km_z, mum_z, Ks_z, Kf_z,
+                                    rhob_z, soil_types, GM_thicknesses, dz)
+            ### ---------------------------------------------------------------------------------------
+
+
+
+            #### SEISMIC FWD MODELING -----------------------------------------------------------------
+            # Velocity model in string format for GPDC
+            velocity_model_string = writeVelocityModel(VM_thicknesses, Vp_z, Vs_z, rhob_z, under_layers, N_under_layers)
+
+            # Dispersion curves computing with GPDC
+            velocity_model_RAMfile = StringIO(velocity_model_string) # Keep velocity model string in the RAM in a file format alike to trick GPDC which expects a file
+            gpdc_command = [f"gpdc -{wave} {n_modes} -n {N_freqs} -min {min_freq} -max {max_freq} -s {s}"]
+
+            try:
+                process = run(gpdc_command, input=velocity_model_RAMfile.getvalue(), text=True, shell=True, stdout=PIPE, stderr=PIPE, check=True) # Raw output string from GPDC
+            except CalledProcessError as e:
+                print(f"\nERROR during GPDC computation. Returned:\n{e.stdout}")
+                print("Used parameters:")
+                print(f'{soil_types = }')
+                print(f'{GM_thicknesses = }')
+                print(f'{Ns = }')
+                print(f'{fracs = }')
+                print(f'{WT = }')
+                print(f'{dz = }\n')
+                dz /= 10
+                top_surface_level /= 10
+                print(f'INFO : dz reduced at {dz}\n')
+                if dz > 0.001:
+                    continue
+                else:
+                    dispersion_data = disp_db[-1]
+                    rms = rms_x[-1]
+                    flag = True
+            
+            computed = True       
+
+            if not flag:
+                gpdc_output_string = process.stdout # Raw output string from GPDC
+                dispersion_data, n_modes = readDispersion(gpdc_output_string) # Reads GPDC output and converts dispersion data to a list of numpy arrays for each mode
+                                                                        # Updates number of computed modes (can be lower than what was defined if frequency range too small)
+            flag = False
+
+            rms = np.sqrt(np.mean((Vr_obs_comp - dispersion_data[0][:,1])**2))
+            nrms = rms / (np.max(Vr_obs_comp) - np.min(Vr_obs_comp))
+            
+            factor = int(dz_origin/dz)
+            zs = zs[::factor]
+            h_z = h_z[::factor]
+            Sw_z = Sw_z[::factor]
+            Swe_z = Swe_z[::factor]
+            Kf_z = Kf_z[::factor]
+            rhof_z = rhof_z[::factor]
+            rhob_z
+            Km_z = Km_z[::factor]
+            mum_z = mum_z[::factor]
+            Vp_z = Vp_z[::factor]
+            Vs_z = Vs_z[::factor]
+            
+            thick_zx.append(GM_thicknesses)
+            soil_zx.append(soil_types)
+            WT_x.append(WT)
+            N_zx.append(Ns)
+            z_zx.append(zs)
+            h_zx.append(h_z)
+            Sw_zx.append(Sw_z)
+            Swe_zx.append(Swe_z)
+            mus_zx.append(mus_z)
+            Ks_zx.append(Ks_z)
+            rhos_zx.append(rhos_z)
+            nus_zx.append(nus_z)
+            Kf_zx.append(Kf_z)
+            rhof_zx.append(rhof_z)
+            rhob_zx.append(rhob_z)
+            Km_zx.append(Km_z)
+            mum_zx.append(mum_z)
+            Vp_zx.append(Vp_z)
+            Vs_zx.append(Vs_z)
+            disp_db.append(dispersion_data)
+            rms_x.append(rms)
+            ### ---------------------------------------------------------------------------------------
+
+
+
+
+    ### SAVE DATA ---------------------------------------------------------------------------------
+    z_zx = pd.DataFrame(z_zx).to_numpy().T
+    xmids = np.array(xmids)
+    xs = xmids
+
+    soil_zx = pd.DataFrame(soil_zx).to_numpy().T
+    if soil_zx.shape[0] < 4:
+        soil_zx = np.pad(soil_zx, ((0, 4-soil_zx.shape[0]), (0, 0)), 'constant', constant_values='None')
+    thick_zx = pd.DataFrame(thick_zx).to_numpy().T
+    if thick_zx.shape[0] < 4:
+        thick_zx = np.pad(thick_zx, ((0, 4-thick_zx.shape[0]), (0, 0)), 'constant', constant_values=np.nan)
+    N_zx = pd.DataFrame(N_zx).to_numpy().T
+    if N_zx.shape[0] < 4:
+        N_zx = np.pad(N_zx, ((0, 4-N_zx.shape[0]), (0, 0)), 'constant', constant_values=np.nan)
+    WT_x = pd.array(WT_x).reshape(len(WT_x))
+
+    h_zx = pd.DataFrame(h_zx).to_numpy().T
+    Sw_zx = pd.DataFrame(Sw_zx).to_numpy().T
+    Swe_zx = pd.DataFrame(Swe_zx).to_numpy().T
+
+    mus_zx = pd.DataFrame(mus_zx).to_numpy().T
+    if mus_zx.shape[0] < 4:
+        mus_zx = np.pad(mus_zx, ((0, 4-mus_zx.shape[0]), (0, 0)), 'constant', constant_values=np.nan)
+    Ks_zx = pd.DataFrame(Ks_zx).to_numpy().T
+    if Ks_zx.shape[0] < 4:
+        Ks_zx = np.pad(Ks_zx, ((0, 4-Ks_zx.shape[0]), (0, 0)), 'constant', constant_values=np.nan)
+    rhos_zx = pd.DataFrame(rhos_zx).to_numpy().T
+    if rhos_zx.shape[0] < 4:
+        rhos_zx = np.pad(rhos_zx, ((0, 4-rhos_zx.shape[0]), (0, 0)), 'constant', constant_values=np.nan)
+    nus_zx = pd.DataFrame(nus_zx).to_numpy().T
+    if nus_zx.shape[0] < 4:
+        nus_zx = np.pad(nus_zx, ((0, 4-nus_zx.shape[0]), (0, 0)), 'constant', constant_values=np.nan)
+
+    Kf_zx = pd.DataFrame(Kf_zx).to_numpy().T
+    rhof_zx = pd.DataFrame(rhof_zx).to_numpy().T
+    rhob_zx = pd.DataFrame(rhob_zx).to_numpy().T
+
+    Km_zx = pd.DataFrame(Km_zx).to_numpy().T
+    mum_zx = pd.DataFrame(mum_zx).to_numpy().T
+
+    Vs_zx = pd.DataFrame(Vs_zx).to_numpy().T
+    Vp_zx = pd.DataFrame(Vp_zx).to_numpy().T
+    disp_db = pd.DataFrame(disp_db).to_numpy()
+      
+
+
+    # zs
+    np.savetxt(f'{PATH_OUTPUT}/{model_id}/{profile}/z_zx.txt', z_zx, fmt='%.2f')
+
+    # max_depth
+    with open(f'{PATH_OUTPUT}/{model_id}/{profile}/max_z.txt', 'w') as f:
+        f.write(f"{-params['data_params']['max_depth']}")
+
+    # xs
+    np.savetxt(f'{PATH_OUTPUT}/{model_id}/{profile}/xs.txt', xs.reshape(1, len(xs)), fmt='%.3f')
+
+    #xmids
+    np.savetxt(f'{PATH_OUTPUT}/{model_id}/{profile}/xmids.txt', xmids.reshape(1, len(xmids)), fmt='%.3f')
+
+    # freqs
+    np.savetxt(f'{PATH_OUTPUT}/{model_id}/{profile}/fs.txt', disp_db[0][0][:,0], fmt='%.2f')
+
+
+
+    # GMs
+    np.savetxt(f'{PATH_OUTPUT}/{model_id}/{profile}/soil_zx.txt', soil_zx, fmt='%s')
+
+    # thicks
+    np.savetxt(f'{PATH_OUTPUT}/{model_id}/{profile}/thick_zx.txt', thick_zx, fmt='%.2f')
+
+    # Ns
+    np.savetxt(f'{PATH_OUTPUT}/{model_id}/{profile}/N_zx.txt', N_zx, fmt='%.2f')
+
+    # WT
+    np.savetxt(f'{PATH_OUTPUT}/{model_id}/{profile}/WT_x.txt', WT_x, fmt='%.2f')
+
+
+
+    # h
+    np.savetxt(f'{PATH_OUTPUT}/{model_id}/{profile}/h_zx.txt', h_zx, fmt='%.2f')
+
+    # Sw
+    np.savetxt(f'{PATH_OUTPUT}/{model_id}/{profile}/Sw_zx.txt', Sw_zx, fmt='%.2f')
+
+    # Swe
+    np.savetxt(f'{PATH_OUTPUT}/{model_id}/{profile}/Swe_zx.txt', Swe_zx, fmt='%.2f')
+
+
+
+    # mus
+    np.savetxt(f'{PATH_OUTPUT}/{model_id}/{profile}/mus_zx.txt', mus_zx, fmt='%.2f')
+
+    # Ks
+    np.savetxt(f'{PATH_OUTPUT}/{model_id}/{profile}/Ks_zx.txt', Ks_zx, fmt='%.2f')
+
+    # rhos
+    np.savetxt(f'{PATH_OUTPUT}/{model_id}/{profile}/rhos_zx.txt', rhos_zx, fmt='%.2f')
+
+    # nus
+    np.savetxt(f'{PATH_OUTPUT}/{model_id}/{profile}/nus_zx.txt', nus_zx, fmt='%.2f')
+
+
+
+    # Kf
+    np.savetxt(f'{PATH_OUTPUT}/{model_id}/{profile}/Kf_zx.txt', Kf_zx, fmt='%.2f')
+
+    # rhof
+    np.savetxt(f'{PATH_OUTPUT}/{model_id}/{profile}/rhof_zx.txt', rhof_zx, fmt='%.2f')
+
+    # rhob
+    np.savetxt(f'{PATH_OUTPUT}/{model_id}/{profile}/rhob_zx.txt', rhob_zx, fmt='%.2f')
+
+
+
+    # Km
+    np.savetxt(f'{PATH_OUTPUT}/{model_id}/{profile}/Km_zx.txt', Km_zx, fmt='%.2f')
+
+    # mum
+    np.savetxt(f'{PATH_OUTPUT}/{model_id}/{profile}/mum_zx.txt', mum_zx, fmt='%.2f')
+
+
+
+    # Vs
+    np.savetxt(f'{PATH_OUTPUT}/{model_id}/{profile}/Vs_zx.txt', Vs_zx, fmt='%.2f')
+
+    # Vp
+    np.savetxt(f'{PATH_OUTPUT}/{model_id}/{profile}/Vp_zx.txt', Vp_zx, fmt='%.2f')
+
+    # disp
+    Vr_fx = []
+    for disp in disp_db:
+        Vr_fx.append(disp[0][:,1])
+    Vr_fx = np.array(Vr_fx).T
+    np.savetxt(f'{PATH_OUTPUT}/{model_id}/{profile}/Vr_fx.txt', Vr_fx, fmt='%.2f')
+    ### -------------------------------------------------------------------------------------------
+
+
+
+
+
+    ### RMS ---------------------------------------------------------------------------------------
+    with open(f'{PATH_OUTPUT}/{model_id}/{profile}/DCs-rms.txt', 'w') as f:
+        f.write(f'Model ID: {model_id}\n\n')
+        f.write(f'Profile: {profile}\n\n')
+        f.write('Average root mean square error on the dispersion curves\n\n')
+        f.write(f'RMS: {np.mean(rms_x)} m/s\n')
+        f.write(f'NRMS: {np.mean(rms_x)/(np.nanmax(Vr_fx)-np.nanmin(Vr_fx))*100} %\n')
+    ### -------------------------------------------------------------------------------------------
